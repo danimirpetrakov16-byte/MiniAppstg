@@ -11,10 +11,22 @@
   доступны Whisper (audio), Gemini Image / FLUX / Seedream (image),
   Veo (video), Kokoro (TTS), Cohere Rerank, GTE-Base (embed).
 * Telegram-бот на `python-telegram-bot==20.7` запускается в фоновом
-  потоке и полностью управляется агентом через инструменты:
-  `rename_bot`, `set_bot_description`, `send_telegram`, `send_poll`,
-  `read_file`, `write_file`, `list_dir`, `run_python`, `shell` (с
-  подтверждением).
+  потоке и **полностью управляется агентом**: метаданные бота, реальные
+  команды/инлайн-кнопки/опросы, и редактирование самого `app.py` без
+  рестарта. Полный набор инструментов:
+  * метаданные — `rename_bot`, `set_bot_description`,
+    `set_bot_short_desc`, `set_bot_commands` (меню «/»),
+    `set_chat_menu_button`;
+  * сообщения — `send_telegram`, `send_telegram_buttons`
+    (`callback_data` / `url`), `send_poll`;
+  * **динамическая логика бота** —
+    `register_handler(name, kind=command|message|callback, trigger, code, owner_only)`,
+    `unregister_handler`, `list_handlers`, `bot_status`,
+    `eval_in_bot` (исполнить корутину в loop'е бота), `restart_bot`;
+  * файлы и код — `read_file`/`write_file`/`list_dir` с
+    `scope="workspace"|"project"` (агент может править сам `app.py`),
+    `run_python` (subprocess+10c таймаут в sandbox), `shell` (с
+    подтверждением через GUI).
 * Кастомный формат ответа агента: блоки `` ```agent ... ``` `` с JSON
   превращаются в кнопки, опросы, чеклисты и tool-вызовы прямо в чате.
 
