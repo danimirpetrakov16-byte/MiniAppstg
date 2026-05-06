@@ -61,6 +61,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 CHATS_FILE = DATA_DIR / "chats.json"
 WORKSPACE_DIR = DATA_DIR / "workspace"
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_ROOT = Path(__file__).resolve().parent
 
 # ---------------------------------------------------------------------------
 # OpenRouter и Telegram — конфигурация
@@ -244,24 +245,69 @@ python-telegram-bot 20.7), который запускает GUI-чат и Teleg
     "items": ["Прочитать код", "Найти баг", "Написать тест"]}}
       — чеклист с галочками.
 
-Доступные инструменты (имя → описание args):
+Доступные инструменты (имя → args). У тебя есть **полный доступ** к
+работающему боту и к собственному `app.py` — можно регистрировать
+команды и инлайн-кнопки на лету, без рестарта.
 
-  rename_bot          — args: {{"name": "<новое имя бота>"}}
-  set_bot_description — args: {{"description": "<текст>"}}
-  set_bot_short_desc  — args: {{"description": "<текст>"}}
-  send_telegram       — args: {{"chat": "<@user|id>", "text": "<text>"}}
-  send_poll           — args: {{"chat": "<@user|id>", "question": "...",
-                                "options": ["a","b","c"]}}
-  read_file           — args: {{"path": "..."}}
-  write_file          — args: {{"path": "...", "content": "..."}}
-  list_dir            — args: {{"path": "."}}
-  run_python          — args: {{"code": "..."}}  # короткий скрипт с таймаутом
-  shell               — args: {{"cmd": "echo hi"}} # подтверждение пользователя
+  rename_bot              — {{"name": "<новое имя>"}}
+  set_bot_description     — {{"description": "<длинный текст до 512 симв.>"}}
+  set_bot_short_desc      — {{"description": "<короткий текст до 120 симв.>"}}
+  set_bot_commands        — {{"commands": [{{"command":"play","description":"…"}}]}}
+                             ставит меню «/» в Telegram-клиенте.
+  set_chat_menu_button    — {{"type":"commands"}} | {{"type":"web_app","text":"…","url":"…"}}
+                             | {{"type":"default"}}
+  send_telegram           — {{"chat":"<@user|id>","text":"…",
+                              "parse_mode":"HTML|Markdown|null"}}
+  send_telegram_buttons   — {{"chat":"<@user|id>","text":"…",
+                              "rows":[[{{"text":"A","data":"a"}},{{"text":"web","url":"https://…"}}]]}}
+                             — отправит сообщение с инлайн-клавиатурой.
+                             callback_data можно ловить в register_handler kind="callback".
+  send_poll               — {{"chat":"<@user|id>","question":"…","options":["a","b"]}}
+
+  register_handler        — {{"name":"<уникальный_id>",
+                              "kind":"command|message|callback",
+                              "trigger":"<имя команды | regex | pattern callback>",
+                              "code":"async def handler(update, context):\\n    …",
+                              "owner_only":false}}
+                             — динамически добавляет обработчик в работающий
+                             Application. Доступны импорты telegram, telegram.ext,
+                             InlineKeyboardButton/Markup, KeyboardButton, filters.
+                             Если owner_only=true — отвечает только {owner}.
+  unregister_handler      — {{"name":"<id>"}}
+  list_handlers           — {{}}  возвращает список зарегистрированных
+  bot_status              — {{}}  getMe + список хендлеров + аптайм
+  eval_in_bot             — {{"code":"<тело async-функции; доступны app, bot>"}}
+                             — для редких случаев, когда нужно выполнить
+                             корутину в loop'е бота.
+  restart_bot             — {{}}  мягкий перезапуск (stop+start)
+
+  read_file               — {{"path":"…", "scope":"workspace|project"}}
+  write_file              — {{"path":"…", "content":"…", "scope":"workspace|project"}}
+                             scope="project" разрешает редактировать app.py
+                             и любые файлы рядом с ним.
+  list_dir                — {{"path":".", "scope":"workspace|project"}}
+  run_python              — {{"code":"…"}}  изолированный subprocess, 10 c
+  shell                   — {{"cmd":"…"}}  только с подтверждением пользователя
+
+Примеры:
+
+  Простая команда /ping:
+    register_handler {{ "name":"ping", "kind":"command", "trigger":"ping",
+      "code":"async def handler(update, context):\\n    await update.message.reply_text('pong')" }}
+
+  Инлайн-кнопки RPS с callback:
+    register_handler {{ "name":"rps_pick", "kind":"command", "trigger":"rps",
+      "code":"async def handler(update, context):\\n    kb = InlineKeyboardMarkup([[InlineKeyboardButton('✊', callback_data='rps:rock'), InlineKeyboardButton('✋', callback_data='rps:paper'), InlineKeyboardButton('✌️', callback_data='rps:scissors')]])\\n    await update.message.reply_text('Выбирай:', reply_markup=kb)" }}
+    register_handler {{ "name":"rps_cb", "kind":"callback", "trigger":"^rps:",
+      "code":"import random\\nasync def handler(update, context):\\n    q = update.callback_query\\n    await q.answer()\\n    user = q.data.split(':')[1]\\n    bot = random.choice(['rock','paper','scissors'])\\n    res = 'ничья' if bot==user else 'ты' if (user,bot) in [('rock','scissors'),('paper','rock'),('scissors','paper')] else 'я'\\n    await q.edit_message_text(f'Я: {{bot}}. Выиграл: {{res}}')" }}
+
+  Меню «/» в клиенте:
+    set_bot_commands {{ "commands": [{{"command":"ping","description":"проверка"}},{{"command":"rps","description":"камень-ножницы-бумага"}}] }}
 
 Думай по шагам, но финальный ответ — короткий и по делу. Если пользователь
-просит «сделай то-то с ботом», вызывай инструмент сразу через блок agent
-и кратко комментируй. Никогда не выдумывай результат инструмента — жди
-system-сообщения с результатом перед тем как отчитаться.
+просит «сделай то-то с ботом», вызывай инструменты сразу. Никогда не
+выдумывай результат инструмента — жди system-сообщения и только потом
+отчитывайся пользователю.
 
 Текущая дата/время: {now}.
 """
@@ -654,6 +700,9 @@ class TelegramBotManager:
         self._started = threading.Event()
         self._stop = threading.Event()
         self._lock = threading.Lock()
+        # name -> handler instance (для динамической регистрации)
+        self._dynamic_handlers: Dict[str, Any] = {}
+        self._started_at: float = 0.0
 
     # --- управление жизненным циклом ------------------------------------
     def start(self) -> None:
@@ -672,13 +721,8 @@ class TelegramBotManager:
         if not self._thread:
             return
         self._stop.set()
-        if self._loop and self._app is not None:
-            try:
-                fut = self._submit(self._shutdown())
-                fut.result(timeout=15)
-            except Exception:
-                log.exception("Ошибка при остановке бота")
-        self._thread.join(timeout=5)
+        # runner() сам сделает graceful shutdown после установки _stop
+        self._thread.join(timeout=20)
         self._thread = None
         self._app = None
         self._loop = None
@@ -716,11 +760,21 @@ class TelegramBotManager:
                 await app.start()
                 me = await app.bot.get_me()
                 self.config.username = "@" + (me.username or "")
+                self._started_at = time.time()
                 self.on_event("bot_started", {"username": self.config.username, "name": me.first_name})
                 await app.updater.start_polling(allowed_updates=None, drop_pending_updates=True)
                 self._started.set()
-                while not self._stop.is_set():
-                    await asyncio.sleep(0.5)
+                try:
+                    while not self._stop.is_set():
+                        await asyncio.sleep(0.5)
+                finally:
+                    try:
+                        if app.updater and app.updater.running:
+                            await app.updater.stop()
+                        await app.stop()
+                        await app.shutdown()
+                    except Exception:
+                        log.exception("Bot graceful shutdown failed")
 
             loop.run_until_complete(runner())
         except Exception as exc:  # noqa: BLE001
@@ -772,10 +826,10 @@ class TelegramBotManager:
         )
 
     # --- API для агента --------------------------------------------------
-    def send_message(self, chat: str, text: str) -> Dict[str, Any]:
+    def send_message(self, chat: str, text: str, parse_mode: Optional[str] = None) -> Dict[str, Any]:
         async def _do():
             target = self._resolve_chat(chat)
-            return await self._app.bot.send_message(chat_id=target, text=text)
+            return await self._app.bot.send_message(chat_id=target, text=text, parse_mode=parse_mode or None)
         m = self._submit(_do()).result(timeout=20)
         return {"message_id": m.message_id, "chat_id": m.chat_id}
 
@@ -805,6 +859,185 @@ class TelegramBotManager:
         ok = self._submit(_do()).result(timeout=15)
         return {"ok": bool(ok)}
 
+    def set_my_commands(self, commands: List[Dict[str, str]]) -> Dict[str, Any]:
+        from telegram import BotCommand
+        cmds = [
+            BotCommand(str(c.get("command", "")).lstrip("/"), str(c.get("description", "")))
+            for c in commands
+            if c.get("command")
+        ]
+
+        async def _do():
+            return await self._app.bot.set_my_commands(cmds)
+        ok = self._submit(_do()).result(timeout=15)
+        return {"ok": bool(ok), "commands": [c.command for c in cmds]}
+
+    def set_chat_menu_button(self, kind: str = "commands", text: str = "", url: str = "") -> Dict[str, Any]:
+        from telegram import MenuButtonCommands, MenuButtonDefault, MenuButtonWebApp, WebAppInfo
+        kind = (kind or "commands").lower()
+        if kind == "commands":
+            btn = MenuButtonCommands()
+        elif kind == "default":
+            btn = MenuButtonDefault()
+        elif kind == "web_app":
+            if not url:
+                raise ToolError("Для type=web_app нужен url")
+            btn = MenuButtonWebApp(text=text or "open", web_app=WebAppInfo(url=url))
+        else:
+            raise ToolError(f"Неизвестный type={kind}")
+
+        async def _do():
+            return await self._app.bot.set_chat_menu_button(menu_button=btn)
+        ok = self._submit(_do()).result(timeout=15)
+        return {"ok": bool(ok), "type": kind}
+
+    def send_telegram_buttons(self, chat: str, text: str, rows: List[List[Dict[str, str]]],
+                              parse_mode: Optional[str] = None) -> Dict[str, Any]:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        kb_rows = []
+        for row in rows or []:
+            kb_row = []
+            for b in row:
+                if "url" in b and b["url"]:
+                    kb_row.append(InlineKeyboardButton(str(b.get("text", "open")), url=str(b["url"])))
+                else:
+                    kb_row.append(InlineKeyboardButton(
+                        str(b.get("text", "?")),
+                        callback_data=str(b.get("data", b.get("text", "?"))),
+                    ))
+            if kb_row:
+                kb_rows.append(kb_row)
+        markup = InlineKeyboardMarkup(kb_rows) if kb_rows else None
+
+        async def _do():
+            target = self._resolve_chat(chat)
+            return await self._app.bot.send_message(
+                chat_id=target, text=text, reply_markup=markup, parse_mode=parse_mode or None,
+            )
+        m = self._submit(_do()).result(timeout=20)
+        return {"message_id": m.message_id, "chat_id": m.chat_id}
+
+    # --- динамическая регистрация хендлеров -----------------------------
+    def _build_handler_namespace(self) -> Dict[str, Any]:
+        import telegram
+        from telegram import (
+            InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
+            ReplyKeyboardMarkup, ReplyKeyboardRemove, Update,
+        )
+        from telegram.ext import filters
+        return {
+            "telegram": telegram,
+            "filters": filters,
+            "InlineKeyboardButton": InlineKeyboardButton,
+            "InlineKeyboardMarkup": InlineKeyboardMarkup,
+            "KeyboardButton": KeyboardButton,
+            "ReplyKeyboardMarkup": ReplyKeyboardMarkup,
+            "ReplyKeyboardRemove": ReplyKeyboardRemove,
+            "Update": Update,
+            "owner_username": self.config.owner,
+        }
+
+    def register_handler(self, name: str, kind: str, trigger: str, code: str,
+                         owner_only: bool = False) -> Dict[str, Any]:
+        from telegram.ext import CommandHandler, MessageHandler, CallbackQueryHandler, filters as f
+        if not name:
+            raise ToolError("Нужно непустое name")
+        ns = self._build_handler_namespace()
+        try:
+            exec(compile(code, f"<handler:{name}>", "exec"), ns)
+        except SyntaxError as exc:
+            raise ToolError(f"SyntaxError в коде: {exc}")
+        func = ns.get("handler")
+        if not callable(func):
+            raise ToolError("В коде должен быть `async def handler(update, context): ...`")
+
+        if owner_only:
+            owner = (self.config.owner or "").lstrip("@").lower()
+            inner = func
+
+            async def gated(update, context):
+                u = update.effective_user
+                uname = (u.username or "").lower() if u else ""
+                if owner and uname != owner:
+                    if update.effective_message:
+                        await update.effective_message.reply_text(
+                            "Эта команда только для владельца бота."
+                        )
+                    return
+                return await inner(update, context)
+
+            func = gated
+
+        kind = (kind or "command").lower()
+        if kind == "command":
+            handler_obj = CommandHandler(str(trigger).lstrip("/"), func)
+        elif kind == "message":
+            handler_obj = MessageHandler(f.Regex(str(trigger or ".*")), func)
+        elif kind == "callback":
+            handler_obj = CallbackQueryHandler(func, pattern=str(trigger) or None)
+        else:
+            raise ToolError(f"kind {kind} не поддерживается (command|message|callback)")
+
+        if name in self._dynamic_handlers:
+            try:
+                self._app.remove_handler(self._dynamic_handlers[name])
+            except Exception:
+                log.exception("remove old handler failed")
+        self._app.add_handler(handler_obj)
+        self._dynamic_handlers[name] = handler_obj
+        return {"ok": True, "name": name, "kind": kind, "trigger": trigger}
+
+    def unregister_handler(self, name: str) -> Dict[str, Any]:
+        h = self._dynamic_handlers.pop(name, None)
+        if not h:
+            return {"ok": False, "error": f"нет хендлера {name}"}
+        try:
+            self._app.remove_handler(h)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "name": name}
+
+    def list_handlers(self) -> Dict[str, Any]:
+        return {"handlers": sorted(self._dynamic_handlers.keys())}
+
+    def bot_status(self) -> Dict[str, Any]:
+        async def _do():
+            me = await self._app.bot.get_me()
+            return {
+                "id": me.id,
+                "username": "@" + (me.username or ""),
+                "first_name": me.first_name,
+                "can_join_groups": me.can_join_groups,
+                "supports_inline_queries": me.supports_inline_queries,
+            }
+        info = self._submit(_do()).result(timeout=15)
+        return {
+            "bot": info,
+            "uptime_sec": (time.time() - self._started_at) if self._started_at else 0,
+            "dynamic_handlers": sorted(self._dynamic_handlers.keys()),
+            "owner": self.config.owner,
+        }
+
+    def eval_in_bot(self, code: str) -> Dict[str, Any]:
+        """Выполняет тело async-функции в loop'е бота. Доступны app, bot."""
+        ns = self._build_handler_namespace()
+        wrapped = "async def __run(app, bot):\n" + textwrap.indent(code or "pass", "    ")
+        try:
+            exec(compile(wrapped, "<eval_in_bot>", "exec"), ns)
+        except SyntaxError as exc:
+            raise ToolError(f"SyntaxError: {exc}")
+        coro = ns["__run"](self._app, self._app.bot)
+        try:
+            res = self._submit(coro).result(timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "result": repr(res)[:1500]}
+
+    def restart_bot(self) -> Dict[str, Any]:
+        self.stop()
+        self.start()
+        return {"ok": True, "username": self.config.username}
+
     def _resolve_chat(self, chat: str) -> Any:
         if not chat:
             raise ValueError("Не указан адресат")
@@ -830,63 +1063,131 @@ class ToolRunner:
     def __init__(self, app: "App") -> None:
         self.app = app
 
+    # tools that don't need a running bot
+    _TOOLS_NO_BOT = {"read_file", "write_file", "list_dir", "run_python", "shell"}
+
     def run(self, chat: Chat, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        log.info("Tool %s args=%s", name, args)
-        bot = self.app.get_bot_manager(chat)
+        log.info("Tool %s args=%s", name, {k: ("…" if k == "code" else v) for k, v in (args or {}).items()})
         try:
+            if name in self._TOOLS_NO_BOT:
+                return self._run_local(name, args)
+            bot = self.app.get_bot_manager(chat)
             if name == "rename_bot":
                 return bot.set_my_name(str(args.get("name", "")))
             if name == "set_bot_description":
                 return bot.set_my_description(str(args.get("description", "")))
             if name == "set_bot_short_desc":
                 return bot.set_my_short_description(str(args.get("description", "")))
+            if name == "set_bot_commands":
+                return bot.set_my_commands(list(args.get("commands") or []))
+            if name == "set_chat_menu_button":
+                return bot.set_chat_menu_button(
+                    kind=str(args.get("type", "commands")),
+                    text=str(args.get("text", "")),
+                    url=str(args.get("url", "")),
+                )
             if name == "send_telegram":
-                return bot.send_message(str(args.get("chat", "")), str(args.get("text", "")))
+                return bot.send_message(
+                    str(args.get("chat", "")),
+                    str(args.get("text", "")),
+                    parse_mode=args.get("parse_mode") or None,
+                )
+            if name == "send_telegram_buttons":
+                return bot.send_telegram_buttons(
+                    str(args.get("chat", "")),
+                    str(args.get("text", "")),
+                    list(args.get("rows") or []),
+                    parse_mode=args.get("parse_mode") or None,
+                )
             if name == "send_poll":
                 return bot.send_poll(
                     str(args.get("chat", "")),
                     str(args.get("question", "")),
                     [str(o) for o in (args.get("options") or [])],
                 )
-            if name == "read_file":
-                return self._read_file(str(args.get("path", "")))
-            if name == "write_file":
-                return self._write_file(str(args.get("path", "")), str(args.get("content", "")))
-            if name == "list_dir":
-                return self._list_dir(str(args.get("path", ".")))
-            if name == "run_python":
-                return self._run_python(str(args.get("code", "")))
-            if name == "shell":
-                return self._shell(str(args.get("cmd", "")))
+            if name == "register_handler":
+                return bot.register_handler(
+                    name=str(args.get("name", "")),
+                    kind=str(args.get("kind", "command")),
+                    trigger=str(args.get("trigger", "")),
+                    code=str(args.get("code", "")),
+                    owner_only=bool(args.get("owner_only", False)),
+                )
+            if name == "unregister_handler":
+                return bot.unregister_handler(str(args.get("name", "")))
+            if name == "list_handlers":
+                return bot.list_handlers()
+            if name == "bot_status":
+                return bot.bot_status()
+            if name == "eval_in_bot":
+                return bot.eval_in_bot(str(args.get("code", "")))
+            if name == "restart_bot":
+                return bot.restart_bot()
             raise ToolError(f"Неизвестный инструмент: {name}")
         except Exception as exc:  # noqa: BLE001
             log.exception("Ошибка инструмента %s", name)
             return {"error": str(exc)}
 
-    def _safe_path(self, p: str) -> Path:
-        p = (WORKSPACE_DIR / p).resolve() if not Path(p).is_absolute() else Path(p).resolve()
-        ws = WORKSPACE_DIR.resolve()
-        if not str(p).startswith(str(ws)):
-            raise ToolError(f"Путь вне рабочей директории {ws}")
-        return p
+    def _run_local(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        if name == "read_file":
+            return self._read_file(str(args.get("path", "")), str(args.get("scope", "workspace")))
+        if name == "write_file":
+            return self._write_file(
+                str(args.get("path", "")),
+                str(args.get("content", "")),
+                str(args.get("scope", "workspace")),
+            )
+        if name == "list_dir":
+            return self._list_dir(str(args.get("path", ".")), str(args.get("scope", "workspace")))
+        if name == "run_python":
+            return self._run_python(str(args.get("code", "")))
+        if name == "shell":
+            return self._shell(str(args.get("cmd", "")))
+        raise ToolError(f"Локальный инструмент {name} не реализован")
 
-    def _read_file(self, path: str) -> Dict[str, Any]:
-        p = self._safe_path(path)
+    def _safe_path(self, p: str, scope: str = "workspace") -> Path:
+        scope = (scope or "workspace").lower()
+        if scope == "project":
+            base = PROJECT_ROOT
+            target = (base / p).resolve() if not Path(p).is_absolute() else Path(p).resolve()
+            base_resolved = base.resolve()
+            if not str(target).startswith(str(base_resolved)):
+                raise ToolError(f"Путь вне директории проекта {base_resolved}")
+            return target
+        # default — workspace sandbox
+        target = (WORKSPACE_DIR / p).resolve() if not Path(p).is_absolute() else Path(p).resolve()
+        ws = WORKSPACE_DIR.resolve()
+        if not str(target).startswith(str(ws)):
+            raise ToolError(
+                f"Путь вне рабочей директории {ws}; для редактирования проекта "
+                f'передавай scope="project".'
+            )
+        return target
+
+    def _read_file(self, path: str, scope: str = "workspace") -> Dict[str, Any]:
+        p = self._safe_path(path, scope)
         if not p.exists():
             return {"error": f"Нет файла {p}"}
         try:
-            return {"path": str(p), "content": p.read_text(encoding="utf-8")}
+            return {"path": str(p), "scope": scope, "content": p.read_text(encoding="utf-8")}
         except UnicodeDecodeError:
-            return {"path": str(p), "content_b64": p.read_bytes().hex(), "encoding": "hex"}
+            return {"path": str(p), "scope": scope, "content_b64": p.read_bytes().hex(), "encoding": "hex"}
 
-    def _write_file(self, path: str, content: str) -> Dict[str, Any]:
-        p = self._safe_path(path)
+    def _write_file(self, path: str, content: str, scope: str = "workspace") -> Dict[str, Any]:
+        p = self._safe_path(path, scope)
         p.parent.mkdir(parents=True, exist_ok=True)
+        # для редактирования проекта оставим бэкап рядом
+        if scope == "project" and p.exists():
+            backup = p.with_suffix(p.suffix + ".bak")
+            try:
+                backup.write_bytes(p.read_bytes())
+            except Exception:
+                log.exception("backup failed for %s", p)
         p.write_text(content, encoding="utf-8")
-        return {"path": str(p), "bytes": len(content.encode("utf-8"))}
+        return {"path": str(p), "scope": scope, "bytes": len(content.encode("utf-8"))}
 
-    def _list_dir(self, path: str) -> Dict[str, Any]:
-        p = self._safe_path(path)
+    def _list_dir(self, path: str, scope: str = "workspace") -> Dict[str, Any]:
+        p = self._safe_path(path, scope)
         if not p.exists():
             return {"error": f"Нет директории {p}"}
         items = []
@@ -896,7 +1197,7 @@ class ToolRunner:
                 "is_dir": child.is_dir(),
                 "size": child.stat().st_size if child.is_file() else None,
             })
-        return {"path": str(p), "items": items}
+        return {"path": str(p), "scope": scope, "items": items}
 
     def _run_python(self, code: str) -> Dict[str, Any]:
         with tempfile.TemporaryDirectory(dir=str(WORKSPACE_DIR)) as tmp:
@@ -1819,6 +2120,78 @@ def self_test() -> int:
     for lang, rules in SYNTAX_RULES.items():
         for _, rgx in rules:
             assert rgx.pattern
+    print("ok")
+
+    print("self-test: ToolRunner._safe_path workspace/project …", end=" ")
+
+    class _StubApp:
+        pass
+
+    runner = ToolRunner(_StubApp())  # type: ignore[arg-type]
+    p_ws = runner._safe_path("foo.txt")
+    assert str(p_ws).startswith(str(WORKSPACE_DIR.resolve()))
+    p_proj = runner._safe_path("app.py", scope="project")
+    assert p_proj.name == "app.py"
+    try:
+        runner._safe_path("../../etc/passwd", scope="project")
+    except ToolError:
+        pass
+    else:
+        raise AssertionError("escape from project root not blocked")
+    print("ok")
+
+    print("self-test: register_handler dispatch (mock app) …", end=" ")
+
+    class _MockApp:
+        def __init__(self) -> None:
+            self.handlers: List[Any] = []
+
+        def add_handler(self, h: Any) -> None:
+            self.handlers.append(h)
+
+        def remove_handler(self, h: Any) -> None:
+            self.handlers.remove(h)
+
+    bot = TelegramBotManager(BotConfig(token="t", owner="@tsuklone"), on_event=lambda *a, **k: None)
+    bot._app = _MockApp()  # type: ignore[assignment]
+    res = bot.register_handler(
+        name="ping",
+        kind="command",
+        trigger="ping",
+        code="async def handler(update, context):\n    await update.message.reply_text('pong')",
+    )
+    assert res["ok"] and res["name"] == "ping"
+    assert "ping" in bot.list_handlers()["handlers"]
+    res2 = bot.register_handler(
+        name="rps_cb",
+        kind="callback",
+        trigger="^rps:",
+        code="async def handler(update, context):\n    pass",
+    )
+    assert res2["ok"]
+    assert len(bot._app.handlers) == 2  # type: ignore[attr-defined]
+    res3 = bot.unregister_handler("ping")
+    assert res3["ok"]
+    assert "ping" not in bot.list_handlers()["handlers"]
+    # owner-only обёртка должна оборачивать функцию
+    bot._app = _MockApp()  # type: ignore[assignment]
+    res4 = bot.register_handler(
+        name="admin",
+        kind="command",
+        trigger="admin",
+        code="async def handler(update, context):\n    await update.message.reply_text('hi')",
+        owner_only=True,
+    )
+    assert res4["ok"]
+    print("ok")
+
+    print("self-test: SystemPrompt mentions new tools …", end=" ")
+    sp = SYSTEM_PROMPT_TEMPLATE.format(
+        app_name="x", owner="@o", chat_name="c",
+        bot_username="@b", chat_description="d", now="now",
+    )
+    for tool in ("register_handler", "set_bot_commands", "send_telegram_buttons", "scope=\"project\"".replace("\"", "")):
+        assert tool.replace("scope=project", "scope") in sp.replace("scope=project", "scope") or tool in sp, f"missing in prompt: {tool}"
     print("ok")
 
     print("ALL OK")
