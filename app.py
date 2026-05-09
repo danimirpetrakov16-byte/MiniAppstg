@@ -762,7 +762,23 @@ def _http_post(
         return
     # urllib fallback
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)  # noqa: S310
+    except urllib.error.HTTPError as exc:
+        # Preserve the JSON error body that OpenRouter returns for 4xx/5xx
+        # responses; otherwise we lose details (rate-limit info, invalid
+        # key messages, …) and only get a generic "HTTP Error 429".
+        try:
+            err_body = exc.read() or b""
+        except Exception:
+            err_body = b""
+        if not err_body:
+            err_body = json.dumps(
+                {"error": {"code": exc.code, "message": str(exc)}}
+            ).encode("utf-8")
+        yield err_body
+        return
+    with resp:
         if not stream:
             yield resp.read()
             return
@@ -1095,6 +1111,23 @@ class JobManager:
             stale = [jid for jid, j in self.jobs.items() if j.finished.is_set() and j.created_at < cutoff]
             for jid in stale:
                 self.jobs.pop(jid, None)
+
+    def start_sweeper(self, interval: int = 300, max_age: int = 3600) -> None:
+        """Spawn a daemon thread that periodically reaps finished jobs.
+
+        Without this, ``self.jobs`` grows without bound: every user message
+        creates a fresh ``Job`` (with its event queue + content/reasoning
+        buffers) that is otherwise never removed.
+        """
+        def _loop() -> None:
+            while True:
+                try:
+                    time.sleep(interval)
+                    self.cleanup(max_age=max_age)
+                except Exception:  # pragma: no cover
+                    log.exception("job sweeper crashed")
+        t = threading.Thread(target=_loop, daemon=True, name="job-sweeper")
+        t.start()
 
 
 JOBS = JobManager()
@@ -1480,23 +1513,40 @@ def run_python(source: str, timeout: int = 8) -> Dict[str, Any]:
 
 
 def run_bash(source: str, timeout: int = 6) -> Dict[str, Any]:
-    try:
-        res = subprocess.run(
-            ["/bin/bash", "-lc", source],
-            capture_output=True,
-            timeout=timeout,
-        )
-        return {
-            "ok": res.returncode == 0,
-            "code": res.returncode,
-            "stdout": res.stdout.decode("utf-8", errors="replace"),
-            "stderr": res.stderr.decode("utf-8", errors="replace"),
-            "lang": "bash",
+    # Sandbox bash the same way as run_python: ephemeral cwd in a
+    # TemporaryDirectory and a minimal env so the script can't trivially
+    # read the host environment (e.g. OPENROUTER_KEY_*) or write into the
+    # files-jail through a relative path. We deliberately use ``bash`` (no
+    # ``-l``) to skip user login files like ~/.bashrc / ~/.profile that
+    # could re-introduce sensitive vars.
+    with tempfile.TemporaryDirectory(prefix="tsukcat_run_") as td:
+        script = Path(td) / "main.sh"
+        script.write_text(source, encoding="utf-8")
+        env = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin",
+            "LANG": "C.UTF-8",
+            "HOME": td,
+            "TMPDIR": td,
         }
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "code": -1, "stdout": "", "stderr": f"timeout after {timeout}s", "lang": "bash"}
-    except Exception as exc:
-        return {"ok": False, "code": -1, "stdout": "", "stderr": str(exc), "lang": "bash"}
+        try:
+            res = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc", str(script)],
+                capture_output=True,
+                timeout=timeout,
+                cwd=td,
+                env=env,
+            )
+            return {
+                "ok": res.returncode == 0,
+                "code": res.returncode,
+                "stdout": res.stdout.decode("utf-8", errors="replace"),
+                "stderr": res.stderr.decode("utf-8", errors="replace"),
+                "lang": "bash",
+            }
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "code": -1, "stdout": "", "stderr": f"timeout after {timeout}s", "lang": "bash"}
+        except Exception as exc:
+            return {"ok": False, "code": -1, "stdout": "", "stderr": f"{type(exc).__name__}: {exc}", "lang": "bash"}
 
 
 def code_run(lang: str, source: str, timeout: int = 8) -> Dict[str, Any]:
@@ -2141,6 +2191,7 @@ def main() -> int:
         return headless_smoke(args.port)
 
     server = ThreadingHTTPServer((args.host, args.port), TsukCatHandler)
+    JOBS.start_sweeper()
     print(f"\n  {APP_NAME} v{APP_VERSION}  ·  http://{args.host}:{args.port}\n")
     print(f"  data dir : {DATA_DIR}")
     print(f"  files dir: {FILES_DIR}")
@@ -4193,3 +4244,7 @@ bindComposer();
 bindGestures();
 boot();
 """
+
+
+if __name__ == "__main__":
+    sys.exit(main())
