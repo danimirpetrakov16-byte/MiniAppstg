@@ -1,100 +1,138 @@
-# AI Chat + Telegram Bot Agent
+# TsukCat AI · мобильный однофайловый AI-чат
 
-Однофайловое (`app.py`) приложение на Python 3:
+Один файл (`app.py`) — самодостаточное приложение на Python 3:
+веб-сервер на стандартной библиотеке + встроенный мобильный фронтенд
+(HTML/CSS/JS) + многомодельный оркестратор поверх OpenRouter.
 
-* GUI на Tkinter — чаты-вкладки, подсветка синтаксиса нескольких языков,
-  code-блоки с кнопками «Запустить / Скопировать / Сохранить», опросы,
-  чеклисты, стриминг печати, кнопка «Стоп», блокировка ввода во время
-  генерации, счётчик токенов, импорт/экспорт чатов в JSON.
-* ИИ-агент поверх OpenRouter с фолбэком по нескольким моделям
-  (MiniMax M2, Tencent Hunyuan A13B, Qwen3 30B A3B). Дополнительно
-  доступны Whisper (audio), Gemini Image / FLUX / Seedream (image),
-  Veo (video), Kokoro (TTS), Cohere Rerank, GTE-Base (embed).
-* Telegram-бот на `python-telegram-bot==20.7` запускается в фоновом
-  потоке и полностью управляется агентом через инструменты:
-  `rename_bot`, `set_bot_description`, `send_telegram`, `send_poll`,
-  `read_file`, `write_file`, `list_dir`, `run_python`, `shell` (с
-  подтверждением).
-* Кастомный формат ответа агента: блоки `` ```agent ... ``` `` с JSON
-  превращаются в кнопки, опросы, чеклисты и tool-вызовы прямо в чате.
+* Интерфейс — **полностью мобильный**, в стиле Claude/Telegram/GPT:
+  тёмная тема, drawer-список чатов с свайпом, bottom-sheet (настройки,
+  файлы, модели), длинный тап → контекстное меню, ripple-анимации,
+  плавный SSE-стрим ответа.
+* **Оркестратор из 13 моделей** OpenRouter: planner → 3 параллельных
+  reasoner-а → coder → synthesizer (стрим) → verifier. Видно стадии,
+  «Размышления», «Мнения моделей» и финальную сверку.
+* **Кастомные блоки** (` ```agent ` JSON-fences) — `plan`, `poll`,
+  `buttons`, `file`, `run`, `tree`, `edit`, `test`, `image`, `thinking`.
+  Сообщение разворачивается в интерактивные виджеты, без перегруза.
+* Подсветка синтаксиса для Python/JS/TS/HTML/JSON и пр. (своя, без CDN).
+  Под каждым блоком — кнопки **Копировать / Запустить / Сохранить**.
+* **Файловый менеджер** в jail-каталоге `~/.tsukcat_ai/files/`: дерево,
+  `mkdir`, создать/открыть/редактировать/скачать/удалить, drag-загрузка,
+  ИИ может прикладывать файлы к ответу (`{"type":"file","name":"…"}`).
+* Запуск кода Python/Bash в подпроцессе с таймаутом, stdout/stderr
+  показываются прямо под блоком кода.
+* Импорт/экспорт чатов в JSON+ZIP, поиск по чатам, опросы под
+  сообщениями (с сохранением на сервере), pin/удаление чатов,
+  редактирование названий, retry/copy/quote из контекстного меню.
+* Никаких внешних веб-фреймворков и CDN: только стандартная
+  библиотека Python (опционально `requests` — есть авто-fallback на
+  `urllib.request`).
 
 ## Установка и запуск
 
 ```bash
-pip install requests "python-telegram-bot==20.7"
-python3 app.py             # GUI
-python3 app.py --self-test # оффлайн-проверки
-python3 app.py --headless  # импорт-смоук без X-сервера (CI)
+# (опционально) ускорить сетевые вызовы
+pip install --user requests
+
+python3 app.py                 # запустить веб-сервер на http://localhost:7860
+python3 app.py --port 8000     # другой порт
+python3 app.py --self-test     # оффлайн-юнит-проверки (БД, парсеры, runner)
+python3 app.py --headless      # CI-смоук: поднять сервер, проверить REST, выйти
 ```
 
-Тестировалось на Python 3.10–3.13.
+Открой `http://localhost:7860` на телефоне (та же сеть) или в Chrome
+DevTools → Toggle device toolbar для мобильного режима.
 
-## Секреты — куда класть
+Тестировалось на Python 3.10–3.13, Linux/macOS/Windows.
 
-Никакие ключи и токены **не зашиты** в исходный код (этого не позволяет
-GitHub push protection и здравый смысл). Источники секретов в порядке
-приоритета:
+## Секреты OpenRouter
 
-1. Переменные окружения:
-   * `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`,
-     `AI_CHAT_OWNER_USERNAME`
-   * `OPENROUTER_KEY_MINIMAX`, `OPENROUTER_KEY_HY3`,
-     `OPENROUTER_KEY_QWEN`, `OPENROUTER_KEY_WHISPER_LARGE_V3`,
-     `OPENROUTER_KEY_WHISPER_LARGE_V3_TURBO`, `OPENROUTER_KEY_WHISPER_1`,
-     `OPENROUTER_KEY_GEMINI_IMAGE`, `OPENROUTER_KEY_VEO`,
-     `OPENROUTER_KEY_RERANK`, `OPENROUTER_KEY_EMBED`,
-     `OPENROUTER_KEY_FLUX`, `OPENROUTER_KEY_SEEDREAM`,
-     `OPENROUTER_KEY_KOKORO`.
-2. Файл `~/.ai_chat_agent/secrets.json` (путь меняется через
-   `AI_CHAT_DATA_DIR`). При первом запуске рядом создаётся
-   `secrets.json.example` с готовой схемой:
+Никакие ключи **не зашиты** в код. Порядок поиска ключа на каждую
+модель:
+
+1. Переменная окружения `OPENROUTER_KEY_<MODEL_ID>` (см. `MODELS` в
+   `app.py`, например `OPENROUTER_KEY_QWEN_CODER`,
+   `OPENROUTER_KEY_COBUDDY` и т. д.).
+2. Файл `~/.tsukcat_ai/secrets.json` секции `openrouter`:
 
    ```json
    {
-     "owner_username": "@tsuklone",
-     "telegram_bot_token": "PUT-YOUR-TOKEN-HERE",
-     "telegram_bot_username": "@YourBot",
      "openrouter": {
-       "minimax": "sk-or-v1-...",
-       "qwen": "sk-or-v1-...",
-       "hy3": "sk-or-v1-..."
+       "cobuddy":     "sk-or-v1-…",
+       "gemma":       "sk-or-v1-…",
+       "qwen3-next":  "sk-or-v1-…",
+       "gpt-oss-1":   "sk-or-v1-…",
+       "qwen-coder":  "sk-or-v1-…",
+       "owl-alpha":   "sk-or-v1-…",
+       "laguna":      "sk-or-v1-…",
+       "gpt-oss-2":   "sk-or-v1-…",
+       "flux2":       "sk-or-v1-…",
+       "riverflow":   "sk-or-v1-…",
+       "nemotron-embed":"sk-or-v1-…",
+       "lyria":       "sk-or-v1-…",
+       "rerank":      "sk-or-v1-…"
      }
    }
    ```
 
-3. Ничего не задано — модель/бот будут отключены, GUI всё равно
-   запустится, в чате будет видно, какие ключи отсутствуют.
+   При первом запуске рядом создаётся `secrets.example.json`.
+3. Каталог данных можно переопределить через `TSUKCAT_DATA_DIR`.
+4. Если ключа нет — модель просто помечается `no_key` в шапке и в
+   bottom-sheet «Настройки → Модели». Остальные продолжают работать.
 
-## Как пользоваться
-
-1. `python3 app.py` — открыть GUI.
-2. **+ Новый чат** — заполнить токен бота, юз бота, юз создателя.
-3. Нажать **Запустить бота** в шапке чата — PTB поднимется в фоне.
-4. Писать агенту в чат. Агент может в ответ:
-   * вызвать инструмент (`rename_bot`, `send_telegram`, …) —
-     результат прилетает system-сообщением;
-   * предложить кнопки/опросы/чеклисты под ответом;
-   * дать code-блок Python, который вы запустите кнопкой «Запустить».
-5. Кнопка **Стоп** прерывает текущую генерацию. Пока агент пишет,
-   поле ввода заблокировано.
-6. **Файл → Импорт/Экспорт** — JSON-дамп всех чатов.
-
-## Структура одного файла
+## Архитектура одного файла
 
 ```
 app.py
- ├── константы и загрузка секретов
- ├── OpenRouterClient (стриминг + фолбэк)
- ├── AIAgent (системный промпт + сборка messages)
- ├── TelegramBotManager (PTB v20 в отдельном loop)
- ├── ToolRunner (rename_bot/send_telegram/run_python/…)
- ├── Tk-GUI: App, NewChatDialog, рендер сообщений и code-блоков
- └── self-test и headless smoke
+├── константы, MODELS, secrets loader
+├── SQLite (chats / messages / files / settings / model_health)
+├── OpenRouter HTTP-клиент (stream SSE + reasoning_details)
+├── Многостадийный оркестратор:
+│     plan → think×N (parallel) → code → synthesize (stream) → verify
+├── parse_agent_blocks() — разбор кастомных JSON-блоков в `agent`-fences
+├── safe_path() — jail для файлов (защита от path-traversal)
+├── code_run() — запуск python/bash в подпроцессе с таймаутом
+├── REST + SSE сервер (http.server.ThreadingHTTPServer)
+├── self_test() — оффлайн-юнит-проверки
+├── headless_smoke() — CI-смоук
+└── INDEX_HTML + FRONTEND_JS — встроенный мобильный UI
 ```
+
+## Кастомные блоки в ответе ИИ
+
+Внутри ответа модели могут быть JSON-блоки `agent`, например:
+
+````
+```agent
+{"type":"plan","title":"Сделать игру","steps":[
+   {"text":"Скелет HTML","status":"done"},
+   {"text":"Логика на JS","status":"active"},
+   {"text":"Стили","status":"pending","kind":"css"}
+]}
+{"type":"poll","question":"Какой движок выбрать?","options":["Phaser","PixiJS","Canvas API"]}
+{"type":"buttons","buttons":[
+   {"label":"Запустить","action":"run-snippet","style":"primary"},
+   {"label":"Что дальше?","action":"ask","prompt":"Что дальше?"}
+]}
+{"type":"file","name":"index.html","lang":"html","path":"games/snake/index.html","content":"<!doctype html>…"}
+```
+````
+
+Они рендерятся как интерактивные виджеты (планы с прогрессом, опросы,
+кнопки-действия, прикреплённые файлы с возможностью открыть/запустить
+/скачать).
 
 ## Безопасность
 
-* Никаких секретов в исходнике/PR.
-* `run_python` — в подпроцессе с таймаутом 10 c в изолированной
-  директории `~/.ai_chat_agent/workspace/`.
-* `shell` всегда требует подтверждения через GUI-диалог.
+* Все файлы — только в `~/.tsukcat_ai/files/` (jail с `safe_path`).
+* Запуск кода — в подпроцессе, изолированно от каталога файлов, с
+  таймаутом (по умолчанию 10 с).
+* Никаких секретов в репозитории — `secrets.json` в `.gitignore`-области
+  (вне рабочего каталога), пример с пустыми значениями только для
+  ориентира.
+* CSP: фронтенд встроен в один документ, без внешних `<script>`/CDN —
+  не зависим от чужой инфраструктуры.
+
+## Лицензия
+
+MIT, владелец: **@tsuklone**.
