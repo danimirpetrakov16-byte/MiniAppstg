@@ -80,7 +80,7 @@ except Exception:
 # Constants & paths
 # ────────────────────────────────────────────────────────────────────
 APP_NAME = "TsukCat AI"
-APP_VERSION = "5.0"
+APP_VERSION = "6.0"
 APP_OWNER = "@tsuklone"
 DEFAULT_PORT = 7860
 DEFAULT_HOST = "0.0.0.0"
@@ -490,7 +490,9 @@ def chat_create(title: str = "Новый чат", settings: Optional[Dict[str, A
 def chat_list() -> List[Dict[str, Any]]:
     with db_conn() as c:
         rows = c.execute(
-            """SELECT chats.*, COUNT(messages.id) AS message_count
+            """SELECT chats.*,
+                  COUNT(messages.id)         AS message_count,
+                  COALESCE(SUM(messages.tokens), 0) AS tokens_used
                FROM chats LEFT JOIN messages ON messages.chat_id=chats.id
                GROUP BY chats.id
                ORDER BY chats.pinned DESC, chats.updated_at DESC"""
@@ -506,6 +508,7 @@ def chat_list() -> List[Dict[str, Any]]:
                 "pinned": bool(r["pinned"]),
                 "settings": _safe_json(r["settings"], {}),
                 "message_count": r["message_count"],
+                "tokens_used": int(r["tokens_used"] or 0),
             }
         )
     return out
@@ -1111,65 +1114,114 @@ def or_health(model_id: str, keys: Optional[Dict[str, str]] = None) -> Dict[str,
 
 ORCHESTRATOR_SYSTEM = textwrap.dedent(
     """
-    Ты — TsukCat AI, кастомный мульти-модельный агент для кодинга и проектов.
-    Владелец: @tsuklone. Среда: Python 3.10+ (часто Pydroid3 на Android),
-    но код должен быть кросс-платформенным когда возможно.
+    Ты — TsukCat AI. Ассистент-инженер общего назначения. Пишешь и отлаживаешь
+    код на любых языках (Python, JavaScript, TypeScript, Go, Rust, C/C++, Java,
+    Kotlin, Swift, C#, Ruby, PHP, SQL, Bash, HTML/CSS, Lua и т. д.) — без
+    предпочтения какого-либо одного. Помогаешь и со всем остальным:
+    архитектурой, дебагом, текстами, таблицами, ML, системным админом, мат.
+    задачами. Среда выполнения для запуска кода — Linux x86_64 c доступом к
+    /bin/bash и python3, но генерируемый код должен быть кросс-платформенным
+    когда возможно.
 
-    СТИЛЬ ОТВЕТА (важно):
-    • Пиши лаконично и по делу. Без воды, без долгих вступлений типа
-      «Хорошо, давайте сделаем…». Сразу к сути.
-    • Для нетривиальных задач первое сообщение — это agent-блок plan.
-    • Структура хорошего ответа:
-        1) краткое вступление (1-2 строки, что будем делать),
-        2) при необходимости — agent plan,
-        3) код / файлы / виджеты,
-        4) короткое summary с следующими шагами и кнопками действий.
-    • Markdown: используй заголовки (##), списки, жирный, цитаты, таблицы
-      и inline-`code`. Подсветку синтаксиса задавай через ```python /
-      ```bash / ```html / ```json / ```ts / ```css / ```sql.
-    • Эмодзи — только в свободном тексте, очень умеренно (0-1 на абзац).
-      В заголовках, кнопках, статусах — НЕ ставь эмодзи.
+    ХАРАКТЕР И ТОН:
+    • Прямой, профессиональный, без подхалимства. Никаких «Отличный вопрос!»,
+      «Хорошо, давайте…», «С удовольствием помогу!». Сразу по делу.
+    • Своё мнение есть. Если решение пользователя — плохое, скажи об этом и
+      объясни почему. Предлагай альтернативы.
+    • Признаёшь неуверенность. Если чего-то не знаешь — пишешь это явно, а не
+      сочиняешь. Если задача требует данных, которых у тебя нет — спрашиваешь.
+    • Не извиняешься постоянно и не повторяешь, что ты ИИ.
 
-    AGENT-ВИДЖЕТЫ. Кастомные интерактивные блоки оформляй как ```agent
-    с ОДНИМ JSON НА СТРОКУ:
+    СТИЛЬ ОТВЕТА:
+    • Лаконично. Длинна ответа = сложности задачи. На «привет» — одна
+      строка. На «напиши REST API» — полноценный артефакт с кодом.
+    • Используй markdown: заголовки (##/###), списки, жирный, цитаты,
+      таблицы, inline-`code`. Блоки кода — с указанием языка
+      (```python / ```js / ```rust / ```sql и т. д.).
+    • Эмодзи — почти никогда. Допустимо ровно одно в начале короткого
+      статус-сообщения («Готово»). В коде, заголовках, кнопках, статусах,
+      списках, плане — никогда.
+    • Если ответ длинный — структурируй: краткое summary в начале, далее
+      детали по разделам.
+
+    AGENT-ВИДЖЕТЫ (используй ТОЛЬКО когда они реально полезны, не для
+    украшения ответа):
        ```agent
        {"type":"plan","title":"...","steps":[{"text":"...","status":"pending"}]}
-       {"type":"poll","question":"...","options":["A","B"],"multi":false}
-       {"type":"buttons","buttons":[{"label":"Запустить","action":"run","target":"file.py"}]}
        {"type":"file","name":"main.py","lang":"python","content":"..."}
        {"type":"run","lang":"python","content":"print('hi')"}
+       {"type":"buttons","buttons":[{"label":"Запустить","action":"run","target":"main.py"}]}
        {"type":"tree","root":"project","children":[...]}
        {"type":"edit","target":"main.py","patch":"..."}
        {"type":"test","title":"smoke","cases":[{"call":"f(1)","expect":1}]}
        {"type":"image","prompt":"...","model":"flux2"}
+       {"type":"poll","question":"...","options":["A","B"],"multi":false}
        ```
 
-    ФАЙЛЫ. Если задача подразумевает артефакты (.py, .html, .json, .md, …) —
-    обязательно создавай их через `file`-блок и приложи `buttons` для
-    Run/Download. Если файлов несколько — оборачивай в `tree`.
+    КОГДА КАКОЙ ВИДЖЕТ:
+    • `file` — ВСЕГДА когда генерируешь код, который пользователь захочет
+      сохранить/запустить (≥ ~10 строк, или это самостоятельный модуль). Имя
+      файла — реальное (например `app.py`, `index.html`, `Cargo.toml`), не
+      `main.py` для всего подряд. Расширение определяет язык.
+    • `buttons` — рядом с `file` для Run/Download/Open. Не дублировать там, где
+      их и так нет смысла нажимать.
+    • `run` — для коротких snippet-ов которые имеет смысл выполнить прямо в
+      ответе, без сохранения в файл.
+    • `plan` — ТОЛЬКО для многошаговых задач (минимум 3 явных шага). Для
+      одношаговых ответов — НЕ пиши план.
+    • `poll` — ОЧЕНЬ редко. Только если пользователь явно просит «дай опрос»
+      / «голосование», ИЛИ если задача неоднозначна и нужен выбор из 2-4
+      взаимоисключающих вариантов, где иначе пришлось бы переспрашивать. В
+      обычном диалоге — не использовать.
+    • `image` — только когда пользователь просит сгенерировать изображение.
+    • `test` — добавь автоматически, если генерируешь нетривиальный код
+      (функция / API / алгоритм).
 
-    ОПРОСЫ. Если задача неоднозначна и можно уточнить за 1 шаг — задай
-    короткий poll вместо потока вопросов.
+    ФАЙЛЫ. Если генерируешь код, оформляй его через `file`-блок плюс
+    `buttons` для запуска/скачивания. Если файлов несколько — добавь `tree`
+    для навигации.
 
-    ЯЗЫК. Если пользователь пишет по-русски — отвечай по-русски.
+    ПАМЯТЬ И КОНТЕКСТ. Помни весь предыдущий разговор. Если пользователь
+    ссылается на «тот код» / «прошлый файл» — отвечай по контексту. Не
+    переспрашивай то, что уже было.
+
+    ЯЗЫК. Отвечай на языке пользователя (русский → русский, английский →
+    английский, и т. д.). Технические термины можно оставлять как есть.
     """
 ).strip()
 
 
 PLANNER_PROMPT = textwrap.dedent(
     """
-    Ты — планировщик TsukCat AI. Получив запрос, выдай ТОЛЬКО JSON-объект:
-    {"summary": "...", "steps": [{"text": "...", "kind": "think|code|file|search|verify"}], "needs_files": bool, "needs_image": bool, "language": "ru|en"}
-    Ничего кроме JSON не пиши. План — большой, детальный, на 4-10 шагов.
+    Ты — планировщик TsukCat AI. Решаешь, нужен ли план для текущего запроса.
+
+    Если запрос ТРИВИАЛЬНЫЙ (приветствие, факт-вопрос на 1 предложение,
+    короткая правка, известный факт), ответь ровно:
+        {"plan": null}
+
+    Иначе верни план:
+        {"plan": {
+          "summary": "<1 предложение что делаем>",
+          "steps": [{"text": "<шаг>", "kind": "think|code|file|search|verify"}],
+          "needs_files": <bool>,
+          "needs_image": <bool>,
+          "language": "ru|en|..."
+        }}
+    Steps — от 3 до 8, каждый — конкретное действие, не «подумать».
+    Отвечай ТОЛЬКО валидным JSON, без preamble.
     """
 ).strip()
 
 
 CODER_PROMPT = textwrap.dedent(
     """
-    Ты — кодер TsukCat AI. Пиши чистый, рабочий код. Если нужен файл — оформи
-    блок ```agent с {"type":"file","name":"...","lang":"...","content":"..."}.
-    Также добавь блок ```agent с {"type":"buttons","buttons":[{"label":"Запустить","action":"run","target":"file.py"}, {"label":"Скачать","action":"download","target":"file.py"}]}.
+    Ты — кодер TsukCat AI. Пиши чистый, рабочий, идиоматический код на
+    запрошенном языке. Если язык не указан — выбери лучший для задачи.
+    Оформляй каждый артефакт как блок ```agent с
+    {"type":"file","name":"<реальное имя>","lang":"<язык>","content":"..."}.
+    Добавь {"type":"buttons","buttons":[{"label":"Запустить","action":"run","target":"<имя>"},
+    {"label":"Скачать","action":"download","target":"<имя>"}]}.
+    Никаких заглушек / TODO / «// implementation here».
     """
 ).strip()
 
@@ -1178,13 +1230,21 @@ VERIFIER_PROMPT = textwrap.dedent(
     """
     Ты — верификатор. Кратко проверь предложенный ответ на ошибки, опечатки,
     логические дыры. Дай 3-5 пунктов ИСПРАВЛЕНИЙ или подтверди что всё ок.
+    Не повторяй сам ответ. Если всё чисто — пиши «Без замечаний».
     """
 ).strip()
 
 
 def parse_plan_json(s: str) -> Optional[Dict[str, Any]]:
-    """Try to extract JSON object from the planner response."""
-    s = s.strip()
+    """Try to extract a plan JSON object from the planner response.
+
+    The planner is instructed to return either ``{"plan": null}`` (trivial
+    request, no plan needed) or ``{"plan": {...}}``. For backwards-compat we
+    also accept a bare plan object with a ``steps`` key. Returns:
+    * a dict with ``steps`` if a real plan was produced
+    * ``None`` if planner explicitly returned null OR if parse failed
+    """
+    s = (s or "").strip()
     if not s:
         return None
     if s.startswith("```"):
@@ -1194,9 +1254,23 @@ def parse_plan_json(s: str) -> Optional[Dict[str, Any]]:
     if not m:
         return None
     try:
-        return json.loads(m.group(0))
+        obj = json.loads(m.group(0))
     except Exception:
         return None
+    if not isinstance(obj, dict):
+        return None
+    # New shape: {"plan": null} or {"plan": {...}}
+    if "plan" in obj:
+        plan = obj.get("plan")
+        if plan is None:
+            return None
+        if isinstance(plan, dict) and plan.get("steps"):
+            return plan
+        return None
+    # Old shape: bare {summary, steps, ...}
+    if obj.get("steps"):
+        return obj
+    return None
 
 
 def detect_image_request(text: str) -> bool:
@@ -1289,14 +1363,29 @@ JOBS = JobManager()
 # ────────────────────────────────────────────────────────────────────
 
 
-def build_history(chat_id: str, max_msgs: int = 30) -> List[Dict[str, Any]]:
+def build_history(chat_id: str, max_msgs: int = 30, include_system: bool = True) -> List[Dict[str, Any]]:
+    """Return chat history as OpenAI-style messages.
+
+    Skips the assistant message that's currently being generated (it has empty
+    content + stage != 'done') so we don't feed an empty placeholder back into
+    a reasoner. Truncates long assistant content to keep prompts reasonable.
+    """
     msgs = message_list(chat_id, limit=max_msgs)
-    out: List[Dict[str, Any]] = [{"role": "system", "content": ORCHESTRATOR_SYSTEM}]
+    out: List[Dict[str, Any]] = []
+    if include_system:
+        out.append({"role": "system", "content": ORCHESTRATOR_SYSTEM})
     for m in msgs:
-        role = m["role"]
+        role = m.get("role")
         if role not in {"user", "assistant", "system"}:
             continue
-        out.append({"role": role, "content": m["content"]})
+        content = m.get("content") or ""
+        if role == "assistant":
+            stage = m.get("stage") or "done"
+            if stage != "done" and not content.strip():
+                continue
+            if len(content) > 4000:
+                content = content[:4000] + "\n\n[…усечено…]"
+        out.append({"role": role, "content": content})
     return out
 
 
@@ -1305,11 +1394,44 @@ def pick_first_available(role: str, keys: Dict[str, str]) -> Optional[Dict[str, 
     return cands[0] if cands else None
 
 
+_TRIVIAL_RX = re.compile(
+    r"^\s*(привет|здаров|здравствуй|hi|hello|hey|ола|ку|спасибо|спс|thanks|thank you|"
+    r"да|нет|ок|ok|okay|понял|понятно|got it|sure|кто ты|who are you|"
+    r"как дела|how are you|how's it going|пока|bye|goodbye)\W*\s*$",
+    re.IGNORECASE,
+)
+
+
+def is_trivial_request(text: str) -> bool:
+    """Heuristic: skip planner+think for one-liner small-talk and short
+    factual questions where a single synthesizer call is enough."""
+    if not text:
+        return True
+    t = text.strip()
+    if len(t) < 12:
+        return True
+    if _TRIVIAL_RX.match(t):
+        return True
+    return False
+
+
 def run_pipeline(job: Job, user_text: str, attachments: List[Dict[str, Any]]) -> None:
     """Multi-stage pipeline: emits events to job."""
     keys = load_secrets()
     history = build_history(job.chat_id)
-    history.append({"role": "user", "content": user_text})
+    # Inject attachments preview into the user message so the AI can refer to them.
+    if attachments:
+        att_lines = []
+        for a in attachments:
+            nm = a.get("name") or a.get("path") or "file"
+            sz = a.get("size") or 0
+            att_lines.append(f"- {nm} ({sz} б)")
+        user_with_files = f"{user_text}\n\nПрикреплённые файлы:\n" + "\n".join(att_lines)
+        history.append({"role": "user", "content": user_with_files})
+    else:
+        history.append({"role": "user", "content": user_text})
+
+    trivial = is_trivial_request(user_text)
 
     job.assistant_msg_id = message_add(
         job.chat_id, "assistant", "", blocks=[], stage="queued"
@@ -1319,93 +1441,106 @@ def run_pipeline(job: Job, user_text: str, attachments: List[Dict[str, Any]]) ->
     def cancelled() -> bool:
         return job.is_cancelled()
 
-    # ────────── Stage 0: ask planner for big detailed plan ──────────
-    job.stage = "plan"
-    job.emit("stage", {"stage": "plan", "label": "Составляю план"})
-    planner = pick_first_available("planner", keys) or pick_first_available("synthesizer", keys) or pick_first_available("reasoner", keys)
     plan_obj: Optional[Dict[str, Any]] = None
-    if planner and not cancelled():
-        plan_messages = [
-            {"role": "system", "content": PLANNER_PROMPT},
-            {"role": "user", "content": user_text},
-        ]
-        plan_res = or_chat(
-            planner["id"],
-            plan_messages,
-            stream=False,
-            reasoning=True,
-            keys=keys,
-            timeout=60,
-            cancel=cancelled,
-        )
-        if plan_res.ok:
-            plan_obj = parse_plan_json(plan_res.content)
-        if plan_obj:
-            job.emit(
-                "block",
-                {
-                    "block": {
-                        "type": "plan",
-                        "title": plan_obj.get("summary") or "План",
-                        "steps": [
-                            {"text": s.get("text") or s.get("title") or str(s), "status": "pending", "kind": s.get("kind") or "think"}
-                            if isinstance(s, dict)
-                            else {"text": str(s), "status": "pending"}
-                            for s in (plan_obj.get("steps") or [])
-                        ],
-                    }
-                },
-            )
-        else:
-            job.emit("warn", {"text": f"Планировщик ({planner['id']}) не вернул JSON, идём дальше"})
-
-    if cancelled():
-        return _finalize(job)
-
-    # ────────── Stage 1: parallel think (reasoners) ──────────
-    job.stage = "think"
-    job.emit("stage", {"stage": "think", "label": "Размышляю"})
-    reasoners = [m for m in MODELS if m["role"] == "reasoner" and keys.get(m["id"])][:3]
     think_results: List[Tuple[Dict[str, Any], ORResult]] = []
-    if reasoners and not cancelled():
-        with ThreadPoolExecutor(max_workers=len(reasoners)) as ex:
-            futures = {
-                ex.submit(
-                    or_chat,
-                    m["id"],
-                    [
-                        {"role": "system", "content": ORCHESTRATOR_SYSTEM},
-                        {"role": "user", "content": f"Задача: {user_text}\nПлан: {json.dumps(plan_obj, ensure_ascii=False) if plan_obj else '—'}\n\nКратко (1-2 абзаца) обдумай решение, без кода."},
-                    ],
-                    stream=False,
-                    reasoning=True,
-                    keys=keys,
-                    timeout=60,
-                    cancel=cancelled,
-                ): m
-                for m in reasoners
-            }
-            for fut in as_completed(futures):
-                m = futures[fut]
-                if cancelled():
-                    break
-                try:
-                    res = fut.result()
-                    think_results.append((m, res))
-                    job.emit(
-                        "thought",
-                        {
-                            "model": m["id"],
-                            "name": m["name"],
-                            "color": m["color"],
-                            "ok": res.ok,
-                            "text": (res.content[:600] + "…") if len(res.content) > 600 else res.content,
-                            "reasoning": (res.reasoning[:400] + "…") if len(res.reasoning) > 400 else res.reasoning,
-                            "error": res.error,
-                        },
-                    )
-                except Exception as exc:  # pragma: no cover
-                    job.emit("warn", {"text": f"Reasoner {m['id']} упал: {exc}"})
+
+    # ────────── Stage 0: ask planner ONLY for non-trivial requests ──────────
+    if not trivial:
+        job.stage = "plan"
+        job.emit("stage", {"stage": "plan", "label": "Составляю план"})
+        planner = pick_first_available("planner", keys) or pick_first_available("synthesizer", keys) or pick_first_available("reasoner", keys)
+        if planner and not cancelled():
+            # Give planner enough context to judge complexity, but keep prompt small.
+            plan_user = user_text
+            if attachments:
+                plan_user += "\n\n(К сообщению приложены " + str(len(attachments)) + " файл(ов).)"
+            plan_messages = [
+                {"role": "system", "content": PLANNER_PROMPT},
+                {"role": "user", "content": plan_user},
+            ]
+            plan_res = or_chat(
+                planner["id"],
+                plan_messages,
+                stream=False,
+                reasoning=False,
+                keys=keys,
+                timeout=45,
+                cancel=cancelled,
+            )
+            if plan_res.ok:
+                plan_obj = parse_plan_json(plan_res.content)
+            if plan_obj:
+                job.emit(
+                    "block",
+                    {
+                        "block": {
+                            "type": "plan",
+                            "title": plan_obj.get("summary") or "План",
+                            "steps": [
+                                {"text": s.get("text") or s.get("title") or str(s), "status": "pending", "kind": s.get("kind") or "think"}
+                                if isinstance(s, dict)
+                                else {"text": str(s), "status": "pending"}
+                                for s in (plan_obj.get("steps") or [])
+                            ],
+                        }
+                    },
+                )
+
+        if cancelled():
+            return _finalize(job)
+
+        # ────────── Stage 1: parallel think (reasoners) — only if plan exists ──────────
+        if plan_obj:
+            job.stage = "think"
+            job.emit("stage", {"stage": "think", "label": "Размышляю"})
+            reasoners = [m for m in MODELS if m["role"] == "reasoner" and keys.get(m["id"])][:2]
+            if reasoners and not cancelled():
+                # Reasoners get the FULL chat history + the plan + the new user text.
+                reasoner_msgs = list(history)
+                reasoner_msgs.append({
+                    "role": "system",
+                    "content": (
+                        "Тебя попросили обдумать ответ. План: "
+                        + json.dumps(plan_obj, ensure_ascii=False)
+                        + "\n\nДай 1-2 абзаца: твоя оценка задачи, ключевые риски/выборы, "
+                        "рекомендованный подход. Без кода."
+                    ),
+                })
+                with ThreadPoolExecutor(max_workers=len(reasoners)) as ex:
+                    futures = {
+                        ex.submit(
+                            or_chat,
+                            m["id"],
+                            reasoner_msgs,
+                            stream=False,
+                            reasoning=True,
+                            keys=keys,
+                            timeout=60,
+                            cancel=cancelled,
+                        ): m
+                        for m in reasoners
+                    }
+                    for fut in as_completed(futures):
+                        m = futures[fut]
+                        if cancelled():
+                            break
+                        try:
+                            res = fut.result()
+                            think_results.append((m, res))
+                            job.emit(
+                                "thought",
+                                {
+                                    "model": m["id"],
+                                    "name": m["name"],
+                                    "color": m["color"],
+                                    "ok": res.ok,
+                                    "text": (res.content[:600] + "…") if len(res.content) > 600 else res.content,
+                                    "reasoning": (res.reasoning[:400] + "…") if len(res.reasoning) > 400 else res.reasoning,
+                                    "error": res.error,
+                                },
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            job.emit("warn", {"text": f"Reasoner {m['id']} упал: {exc}"})
 
     if cancelled():
         return _finalize(job)
@@ -1423,21 +1558,20 @@ def run_pipeline(job: Job, user_text: str, attachments: List[Dict[str, Any]]) ->
         f"{m['short']} ({m['name']}): {r.content[:400]}" for m, r in think_results if r.ok
     )
 
+    # Synthesizer ALWAYS gets the full chat history. Extra hints (plan,
+    # reasoner digests) are injected as a system prefix only when present.
     synth_messages = list(history)
-    synth_messages.append(
-        {
-            "role": "system",
-            "content": (
-                ORCHESTRATOR_SYSTEM
-                + "\n\nПлан этого шага: "
-                + (json.dumps(plan_obj, ensure_ascii=False) if plan_obj else "—")
-                + "\n\nМысли других моделей:\n"
-                + (digest or "—")
-                + "\n\nТеперь дай пользователю красивый, структурированный ответ. "
-                "Включи нужные блоки кода и `agent`-виджеты согласно правилам."
-            ),
-        }
-    )
+    if plan_obj or digest:
+        hint = ""
+        if plan_obj:
+            hint += "План: " + json.dumps(plan_obj, ensure_ascii=False) + "\n\n"
+        if digest:
+            hint += "Мнения других моделей:\n" + digest + "\n\n"
+        hint += (
+            "Используй это как подсказку (не цитируй мнения дословно). "
+            "Дай финальный ответ в характере TsukCat AI согласно стилю выше."
+        )
+        synth_messages.append({"role": "system", "content": hint})
 
     text_buf: List[str] = []
     reason_buf: List[str] = []
@@ -1521,8 +1655,9 @@ def run_pipeline(job: Job, user_text: str, attachments: List[Dict[str, Any]]) ->
             else:
                 job.emit("warn", {"text": f"image_gen упал: {img.error}"})
 
-    # ────────── Stage 4: verifier (kind of self-check) ──────────
-    if not cancelled():
+    # ────────── Stage 4: verifier (only for non-trivial answers) ──────────
+    # Skip verify for short/trivial responses — adds latency without value.
+    if not cancelled() and not trivial and len(final_text) > 400:
         verifier = pick_first_available("verifier", keys)
         if verifier and verifier["id"] != synth["id"]:
             job.stage = "verify"
@@ -1833,6 +1968,57 @@ def parse_multipart(body: bytes, ctype: str) -> Dict[str, Any]:
 # ── REST API endpoints ────────────────────────────────────────────────
 
 
+# ── Subscription tiers ───────────────────────────────────────────────
+# Local-only mock — no real billing. Tier is read from a tiny JSON file
+# in DATA_DIR (or 'free' by default). Lets us show a token-budget
+# counter in the header and surface upgrade hints.
+
+TIERS: Dict[str, Dict[str, Any]] = {
+    "free":    {"name": "Free",    "monthly_tokens": 200_000,    "concurrent": 1, "models": "all"},
+    "pro":     {"name": "Pro",     "monthly_tokens": 5_000_000,  "concurrent": 3, "models": "all"},
+    "team":    {"name": "Team",    "monthly_tokens": 25_000_000, "concurrent": 8, "models": "all"},
+}
+
+
+def _tier_path() -> Path:
+    return DATA_DIR / "tier.json"
+
+
+def get_tier_id() -> str:
+    p = _tier_path()
+    if p.exists():
+        try:
+            return (json.loads(p.read_text("utf-8")) or {}).get("tier") or "free"
+        except Exception:
+            pass
+    return "free"
+
+
+def set_tier_id(tid: str) -> None:
+    if tid not in TIERS:
+        raise ValueError(f"Unknown tier: {tid}")
+    _tier_path().write_text(json.dumps({"tier": tid}, ensure_ascii=False), encoding="utf-8")
+
+
+def api_tier_info(tokens_used: int) -> Dict[str, Any]:
+    tid = get_tier_id()
+    t = TIERS.get(tid) or TIERS["free"]
+    limit = int(t["monthly_tokens"])
+    pct = round(min(100.0, (tokens_used / limit) * 100.0), 2) if limit else 0.0
+    return {
+        "id": tid,
+        "name": t["name"],
+        "monthly_tokens": limit,
+        "tokens_used": tokens_used,
+        "tokens_remaining": max(0, limit - tokens_used),
+        "pct": pct,
+        "concurrent": int(t["concurrent"]),
+        "all_tiers": [
+            {"id": k, **v} for k, v in TIERS.items()
+        ],
+    }
+
+
 def api_state() -> Dict[str, Any]:
     keys = load_secrets()
     models = []
@@ -1850,6 +2036,12 @@ def api_state() -> Dict[str, Any]:
                 "has_key": bool(keys.get(m["id"])),
             }
         )
+    # Compute global token usage across all chats so the header can show it.
+    with db_conn() as c:
+        row = c.execute(
+            "SELECT COALESCE(SUM(tokens), 0) AS used FROM messages"
+        ).fetchone()
+        used = int(row["used"] if row else 0)
     return {
         "app": APP_NAME,
         "version": APP_VERSION,
@@ -1860,6 +2052,7 @@ def api_state() -> Dict[str, Any]:
         "have_requests": HAVE_REQUESTS,
         "python": platform.python_version(),
         "platform": platform.platform(),
+        "tier": api_tier_info(used),
     }
 
 
@@ -2103,6 +2296,19 @@ class TsukCatHandler(BaseHTTPRequestHandler):
                     c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES(?,?)", (k, json.dumps(v, ensure_ascii=False)))
                 json_resp(self, 200, {"ok": True})
                 return
+            if path == "/api/tier":
+                tid = (body or {}).get("tier", "")
+                if tid not in TIERS:
+                    json_resp(self, 400, {"error": "unknown_tier"})
+                    return
+                set_tier_id(tid)
+                with db_conn() as c:
+                    row = c.execute(
+                        "SELECT COALESCE(SUM(tokens), 0) AS used FROM messages"
+                    ).fetchone()
+                    used = int(row["used"] if row else 0)
+                json_resp(self, 200, api_tier_info(used))
+                return
             json_resp(self, 404, {"error": "not_found", "path": path})
         except Exception as exc:
             log.exception("POST %s failed", self.path)
@@ -2225,8 +2431,20 @@ def self_test() -> int:
     res = code_run("python", "print(2*21)", timeout=5)
     check("python_runner", res.get("ok") and "42" in res.get("stdout", ""))
 
+    # bare plan
     plan_obj = parse_plan_json('{"summary": "ok", "steps": [{"text": "a"}]}')
-    check("plan_json parse", plan_obj is not None and plan_obj.get("summary") == "ok")
+    check("plan_json bare", plan_obj is not None and plan_obj.get("summary") == "ok")
+    # wrapped plan
+    plan_obj = parse_plan_json('{"plan": {"summary": "ok", "steps": [{"text": "a"}]}}')
+    check("plan_json wrapped", plan_obj is not None and plan_obj.get("summary") == "ok")
+    # explicit null
+    plan_obj = parse_plan_json('{"plan": null}')
+    check("plan_json null", plan_obj is None)
+    check("trivial smalltalk", is_trivial_request("привет") is True)
+    check("trivial long", is_trivial_request("Напиши REST API на FastAPI с авторизацией и тестами") is False)
+    # tier system
+    info = api_tier_info(0)
+    check("tier_info", info["id"] == "free" and info["pct"] == 0.0 and len(info["all_tiers"]) == 3)
 
     state = api_state()
     check(
