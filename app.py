@@ -3613,13 +3613,13 @@ function renderPoll(b, msg){
   const id = msg ? msg.id : "p";
   const opts = b.options || [];
   const multi = !!b.multi;
-  const cur = (msg && msg.poll_state) ? msg.poll_state : (state.pollAnswers[id]||null);
+  const cur = (msg && msg.poll_state != null) ? msg.poll_state : (state.pollAnswers[id] ?? null);
   return `<div class="poll" data-msg="${escapeHTML(id)}" data-multi="${multi}">
     <div class="poll-q">${renderInline(b.question||"")}</div>
     <div class="poll-opts">
       ${opts.map((o,i)=>`
-        <div class="poll-opt ${cur && (multi?cur.includes(i):cur===i)?"selected":""}" data-multi="${multi}" data-i="${i}">
-          <span class="marker">${(multi && cur && cur.includes && cur.includes(i))?svgs.check:""}</span>
+        <div class="poll-opt ${(cur!=null && (multi ? Array.isArray(cur) && cur.includes(i) : cur===i)) ? "selected" : ""}" data-multi="${multi}" data-i="${i}">
+          <span class="marker">${(multi && Array.isArray(cur) && cur.includes(i)) ? svgs.check : ""}</span>
           <span>${renderInline(o)}</span>
         </div>`).join("")}
     </div>
@@ -3806,7 +3806,7 @@ function msgSig(m){
     (m.reasoning||"").length,
     (m._verify||"").length,
     (m._thoughts||[]).length,
-    JSON.stringify(m.poll_state||null),
+    JSON.stringify(m.poll_state ?? null),
     (m.files||[]).length,
   ].join("|");
 }
