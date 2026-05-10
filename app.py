@@ -2912,12 +2912,32 @@ img{max-width:100%;display:block;}
 .input-actions .btn-icon svg{width:18px;height:18px;}
 .draft-files{display:flex;gap:6px;flex-wrap:wrap;padding:6px 4px 0;}
 .draft-files .pill{
-  display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
-  background:var(--bg-3);border:1px solid var(--line);font-size:12px;
+  display:inline-flex;align-items:center;gap:6px;padding:5px 8px 5px 10px;border-radius:999px;
+  background:var(--bg-3);border:1px solid var(--line);font-size:12px;color:var(--text);
+  max-width:240px;
 }
-.draft-files .pill svg{width:13px;height:13px;}
-.draft-files .pill button{color:var(--text-mute);}
-.draft-files .pill button:hover{color:var(--bad);}
+.draft-files .pill > span{
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px;
+}
+.draft-files .pill svg{width:13px;height:13px;color:var(--accent);flex-shrink:0;}
+.draft-files .pill button{
+  border:0;background:transparent;color:var(--text-mute);cursor:pointer;
+  width:18px;height:18px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;
+  font-size:14px;line-height:1;padding:0;margin-left:2px;
+}
+.draft-files .pill button:hover{color:var(--bad);background:rgba(239,107,107,.12);}
+
+/* Per-message file attachments (above bubble content) */
+.msg-attachs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}
+.msg-attach{
+  display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:10px;
+  background:var(--bg-3);border:1px solid var(--line);font-size:12px;color:var(--text);
+  cursor:pointer;max-width:240px;
+}
+.msg-attach:hover{background:var(--bg-4);}
+.msg-attach svg{width:14px;height:14px;color:var(--accent);flex-shrink:0;}
+.msg-attach .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;}
+.msg-attach .sz{color:var(--text-mute);font-size:11px;}
 
 /* ───────── Bottom sheet ───────── */
 .sheet{
@@ -3025,15 +3045,21 @@ img{max-width:100%;display:block;}
 
 /* Context menu */
 .menu{
-  position:fixed;background:var(--bg-3);border:1px solid var(--line);border-radius:12px;
-  box-shadow:var(--shadow-lg);z-index:120;padding:4px;min-width:200px;
-  animation:slidein .2s var(--ease) both;
+  position:fixed;background:var(--bg-3);border:1px solid var(--line);border-radius:14px;
+  box-shadow:var(--shadow-lg);z-index:120;padding:4px;min-width:208px;max-width:280px;
+  opacity:0;transform:scale(.92) translateY(-4px);transform-origin:top left;
+  transition:opacity .14s var(--ease), transform .14s var(--ease);
+  user-select:none;-webkit-user-select:none;touch-action:manipulation;
 }
+.menu.open{opacity:1;transform:scale(1) translateY(0);}
+.menu.closing{opacity:0;transform:scale(.96) translateY(-2px);pointer-events:none;}
 .menu .item{
-  display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:14px;
+  display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:14px;
+  -webkit-tap-highlight-color:transparent;
 }
-.menu .item:hover{background:var(--bg-4);}
-.menu .item svg{width:16px;height:16px;color:var(--text-dim);}
+.menu .item:hover,.menu .item:active{background:var(--bg-4);}
+.menu .item svg{width:16px;height:16px;color:var(--text-dim);flex-shrink:0;}
+.menu .item span{flex:1;}
 .menu .sep{height:1px;background:var(--line);margin:4px 6px;}
 .menu .item.danger{color:var(--bad);}
 .menu .item.danger svg{color:var(--bad);}
@@ -3361,18 +3387,41 @@ function highlightCode(code, lang){
   return out.join("");
 }
 
+function cleanText(s){
+  if (!s) return "";
+  // strip nulls + most C0/C1 control chars (keep \n and \t)
+  s = s.replace(/[\u0000-\u0008\u000B-\u001F\u007F-\u009F]/g, "");
+  // collapse very common mojibake left over from latin1↔utf8 round-trips
+  s = s.replace(/Ð\s/g, "");
+  // strip zero-width joiner / non-joiner / BOM
+  s = s.replace(/[\u200B-\u200D\uFEFF]/g, "");
+  return s;
+}
+
 function renderInline(s){
-  // bold, italic, code, links, line breaks
-  let t = escapeHTML(s);
-  t = t.replace(/`([^`]+)`/g, (_, c) => '<code>' + c + '</code>');
-  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  t = t.replace(/\b_(?!_)([^_]+)_\b/g, '<em>$1</em>');
+  // bold, italic, code, links, line breaks. Robust against malformed
+  // markdown — orphan ``, **, * become literal, never break the doc.
+  let t = escapeHTML(cleanText(s));
+  // inline code first (so its contents are not parsed as bold/italic)
+  t = t.replace(/`([^`\n]+)`/g, (_, c) => '<code>' + c + '</code>');
+  // bold
+  t = t.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+  // italic — *foo* (avoid matching ** by requiring non-* on both sides)
+  t = t.replace(/(^|[^\*])\*([^*\n]+?)\*(?!\*)/g, '$1<em>$2</em>');
+  // italic — _foo_ (only at word boundaries)
+  t = t.replace(/(^|[\s(])_([^_\n]+?)_(?=[\s.,!?:;)]|$)/g, '$1<em>$2</em>');
+  // strip orphaned literal asterisks left over from broken markdown
+  t = t.replace(/(^|\s)\*(\s)/g, '$1$2');
+  // links
   t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // bare http(s) links (only outside an existing href)
+  t = t.replace(/(^|[\s(])(https?:\/\/[^\s<>"']+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
   return t;
 }
 
 function renderMarkdown(md){
   if (!md) return "";
+  md = cleanText(md);
   const lines = md.split(/\r?\n/);
   const out = [];
   let i = 0;
@@ -3680,6 +3729,19 @@ function renderMsg(m){
     </details>`;
   }
 
+  // Inline file attachments on user (or assistant) messages —
+  // shown as small chips above the bubble content.
+  let attachs = "";
+  if (m.files && m.files.length){
+    attachs = `<div class="msg-attachs">${m.files.map(f => {
+      const nm = f.name || (f.path||"").split("/").pop() || "file";
+      const sz = (typeof f.size === "number") ? `${f.size} б` : "";
+      const path = f.path || "";
+      return `<span class="msg-attach" data-act="open-file" data-path="${escapeHTML(path)}" data-name="${escapeHTML(nm)}">
+        ${svgs.doc}<span class="nm">${escapeHTML(nm)}</span>${sz?`<span class="sz">${escapeHTML(sz)}</span>`:""}
+      </span>`;
+    }).join("")}</div>`;
+  }
   const roleAria = isUser ? 'Вы' : 'TsukCat AI';
   return `<div class="msg ${isUser?'user':'assistant'}" data-id="${escapeHTML(m.id)}">
     <div class="role" aria-label="${roleAria}">
@@ -3687,7 +3749,7 @@ function renderMsg(m){
       <span class="who">${isUser?'Вы':'TsukCat'}</span>
       <span class="when">${formatTs(m.created_at)}</span>
     </div>
-    <div class="bubble">${stage}${thoughts}${reasoning}<div class="content">${renderBlocks(blocks, m)}${typing}</div>${verify}</div>
+    <div class="bubble">${stage}${thoughts}${reasoning}${attachs}<div class="content">${renderBlocks(blocks, m)}${typing}</div>${verify}</div>
   </div>`;
 }
 
@@ -3701,19 +3763,117 @@ function formatTs(s){
   } catch(_){ return ""; }
 }
 
-/* ───────── Message list rendering ───────── */
+/* ───────── Message list rendering ─────────
+ *
+ * Two-tier strategy to keep the chat from flickering during streaming:
+ *
+ *   1. renderMessages() does *DOM patching*, not innerHTML rebuild.
+ *      Each .msg gets a `data-sig` from msgSig(m). On re-render we walk
+ *      the existing children of #scroll, drop any whose id is no longer
+ *      in state.messages, replace any whose signature changed, and
+ *      insert new ones in place. Untouched messages keep their actual
+ *      DOM nodes (and their selection / open <details> / scroll inside
+ *      code blocks survive).
+ *
+ *   2. scheduleRender() coalesces multiple calls per animation frame.
+ *      The SSE stream fires deltas at ~30–60 Hz; without this, every
+ *      delta would synchronously rebuild the assistant message and
+ *      that's where the visible flicker came from.
+ */
+
+function msgSig(m){
+  // Cheap, deterministic signature. We only need to detect *content*
+  // change — pointer-only mutations on existing messages must produce a
+  // different sig. We DO NOT JSON.stringify large payloads here.
+  let blocksFp = "";
+  if (m.blocks && m.blocks.length){
+    for (const b of m.blocks){
+      blocksFp += (b.type || "?") + ":";
+      if (b.type === "md")        blocksFp += (b.text||"").length + ";";
+      else if (b.type === "plan") blocksFp += (b.steps||[]).length + "/" + (b.steps||[]).filter(s=>s.status==="done").length + ";";
+      else if (b.type === "poll") blocksFp += (b.options||[]).length + ";";
+      else if (b.type === "buttons") blocksFp += (b.buttons||[]).length + ";";
+      else if (b.type === "file") blocksFp += (b.name||"") + ":" + (b.content||"").length + ";";
+      else                        blocksFp += JSON.stringify(b).length + ";";
+    }
+  }
+  return [
+    m.id || "",
+    m.role || "",
+    m.stage || "",
+    (m.content||"").length,
+    blocksFp,
+    (m.reasoning||"").length,
+    (m._verify||"").length,
+    (m._thoughts||[]).length,
+    JSON.stringify(m.poll_state||null),
+    (m.files||[]).length,
+  ].join("|");
+}
+
+let _renderQueued = false;
+function scheduleRender(){
+  if (_renderQueued) return;
+  _renderQueued = true;
+  requestAnimationFrame(() => {
+    _renderQueued = false;
+    renderMessages();
+  });
+}
+
 function renderMessages(){
   const root = $("#scroll");
   if (!state.messages.length){
-    root.innerHTML = "";
-    root.appendChild(buildEmptyState());
+    if (!root.querySelector(".empty-state")){
+      root.innerHTML = "";
+      root.appendChild(buildEmptyState());
+    }
     return;
   }
-  // sticky-bottom: keep auto-scroll if user is near the bottom (within 120px),
-  // so streaming content doesn't yank the page when user scrolled up to read.
+  const empty = root.querySelector(".empty-state");
+  if (empty) empty.remove();
+
+  // sticky-bottom: keep auto-scroll if user is near the bottom (within
+  // 120px), so streaming content doesn't yank the page when user
+  // scrolled up to read.
   const wasNearBottom = (root.scrollHeight - root.scrollTop - root.clientHeight) < 120;
   const prevTop = root.scrollTop;
-  root.innerHTML = state.messages.map(renderMsg).join("");
+
+  // index existing nodes by id
+  const existing = new Map();
+  for (const el of root.children){
+    if (el.classList && el.classList.contains("msg") && el.dataset.id){
+      existing.set(el.dataset.id, el);
+    }
+  }
+  const liveIds = new Set(state.messages.map(m => m.id));
+  for (const [id, el] of existing){
+    if (!liveIds.has(id)) el.remove();
+  }
+
+  let prev = null;
+  const tmp = document.createElement("template");
+  for (const m of state.messages){
+    const sig = msgSig(m);
+    const oldEl = existing.get(m.id);
+    if (oldEl && oldEl.dataset.sig === sig){
+      prev = oldEl;
+      continue;
+    }
+    tmp.innerHTML = renderMsg(m).trim();
+    const newEl = tmp.content.firstElementChild;
+    if (!newEl){ continue; }
+    newEl.dataset.sig = sig;
+    if (oldEl){
+      oldEl.replaceWith(newEl);
+    } else if (prev){
+      prev.after(newEl);
+    } else {
+      root.prepend(newEl);
+    }
+    prev = newEl;
+  }
+
   if (state.pendingScroll){
     requestAnimationFrame(() => root.scrollTo({top: root.scrollHeight, behavior: "smooth"}));
     state.pendingScroll = false;
@@ -3887,25 +4047,25 @@ function startJob(jobId){
     } catch(_){}
   });
   es.addEventListener("stage", e => {
-    try { placeholder.stage = JSON.parse(e.data).stage; renderMessages(); } catch(_){}
+    try { placeholder.stage = JSON.parse(e.data).stage; scheduleRender(); } catch(_){}
   });
   es.addEventListener("delta", e => {
     try {
       textBuf += JSON.parse(e.data).text || "";
       placeholder.content = textBuf;
       placeholder.blocks = [{type:"md", text: textBuf}];
-      renderMessages();
+      scheduleRender();
     } catch(_){}
   });
   es.addEventListener("reasoning", e => {
-    try { placeholder.reasoning += JSON.parse(e.data).text || ""; renderMessages(); } catch(_){}
+    try { placeholder.reasoning += JSON.parse(e.data).text || ""; scheduleRender(); } catch(_){}
   });
   es.addEventListener("block", e => {
     try {
       const b = JSON.parse(e.data).block;
       // attach as a non-md prefix block
       placeholder.blocks.unshift(b);
-      renderMessages();
+      scheduleRender();
     } catch(_){}
   });
   es.addEventListener("blocks", e => {
@@ -3913,14 +4073,14 @@ function startJob(jobId){
       const blocks = JSON.parse(e.data).blocks || [];
       // Replace blocks with the parsed structured ones
       placeholder.blocks = blocks;
-      renderMessages();
+      scheduleRender();
     } catch(_){}
   });
   es.addEventListener("thought", e => {
-    try { placeholder._thoughts.push(JSON.parse(e.data)); renderMessages(); } catch(_){}
+    try { placeholder._thoughts.push(JSON.parse(e.data)); scheduleRender(); } catch(_){}
   });
   es.addEventListener("verify", e => {
-    try { placeholder._verify = JSON.parse(e.data).text; renderMessages(); } catch(_){}
+    try { placeholder._verify = JSON.parse(e.data).text; scheduleRender(); } catch(_){}
   });
   es.addEventListener("warn", e => {
     try { toast(JSON.parse(e.data).text, "error"); } catch(_){}
@@ -4139,12 +4299,75 @@ async function renderFiles(){
   $("#fm-root").innerHTML = crumbs + tools + list;
 }
 
-/* ───────── Global click handler ───────── */
+/* ───────── Global click handler ─────────
+ *
+ *  This is the single click delegator for the whole app.  It must
+ *  handle BOTH `[data-act="…"]` buttons AND raw class hooks like
+ *  `.chat-item`, `.fm-row`, `.crumb`, `.poll-opt`, `.hint`.
+ *  Earlier versions returned early when no `[data-act]` was found,
+ *  which was the reason chat switching, file rows and crumbs felt
+ *  dead.
+ */
 document.addEventListener("click", async ev => {
   // close ctx menu on outside click
   if (state.ctxMenu && !ev.target.closest(".menu")){
-    state.ctxMenu.remove(); state.ctxMenu = null;
+    closeCtxMenu();
   }
+
+  // ── class-hook elements (no data-act) ──
+  const ci = ev.target.closest(".chat-item");
+  if (ci && ci.dataset.id){
+    openChat(ci.dataset.id);
+    return;
+  }
+  const cr = ev.target.closest(".crumb");
+  if (cr && cr.hasAttribute("data-path")){
+    state.fmPath = cr.dataset.path || "";
+    renderFiles();
+    return;
+  }
+  const fmr = ev.target.closest(".fm-row");
+  if (fmr){
+    if (fmr.dataset.dir === "true"){ state.fmPath = fmr.dataset.path; renderFiles(); return; }
+    try {
+      const r = await get("/api/files/read?path=" + encodeURIComponent(fmr.dataset.path));
+      openFileEditor(r);
+    } catch(e){ toast(e.message, "error"); }
+    return;
+  }
+  const hint = ev.target.closest(".hint[data-prompt]");
+  if (hint){
+    const ta = $("#msg");
+    ta.value = hint.dataset.prompt;
+    resizeTextarea();
+    ta.focus();
+    return;
+  }
+  const polo = ev.target.closest(".poll-opt");
+  if (polo){
+    const pollEl = polo.closest(".poll");
+    const mid = pollEl?.dataset.msg;
+    const multi = pollEl?.dataset.multi === "true";
+    const i = +polo.dataset.i;
+    if (!mid || isNaN(i)) return;
+    let cur = state.pollAnswers[mid] ?? (multi ? [] : null);
+    if (multi){
+      if (!Array.isArray(cur)) cur = [];
+      cur = cur.includes(i) ? cur.filter(x => x !== i) : cur.concat([i]);
+    } else {
+      cur = i;
+    }
+    state.pollAnswers[mid] = cur;
+    // attach to the message so DOM-patching keeps the highlight
+    const msg = state.messages.find(m => m.id === mid);
+    if (msg) msg.poll_state = cur;
+    scheduleRender();
+    try { await post(`/api/messages/${mid}/poll`, {answer: cur}); }
+    catch(_){}
+    return;
+  }
+
+  // ── [data-act] buttons ──
   const t = ev.target.closest("[data-act]");
   if (!t) return;
   const act = t.dataset.act;
@@ -4189,13 +4412,7 @@ document.addEventListener("click", async ev => {
     return;
   }
 
-  // file open / chat open
-  if (t.classList.contains("chat-item") || t.closest(".chat-item")){
-    const ci = t.closest(".chat-item");
-    if (ci){ openChat(ci.dataset.id); return; }
-  }
-
-  // file manager
+  // file manager toolbar
   if (act === "fm-up"){
     state.fmPath = state.fmPath.split("/").slice(0,-1).join("/");
     renderFiles(); return;
@@ -4216,21 +4433,13 @@ document.addEventListener("click", async ev => {
     catch(e){ toast(e.message, "error"); }
     return;
   }
-  if (t.classList.contains("crumb")){
-    state.fmPath = t.dataset.path || ""; renderFiles(); return;
-  }
-  if (t.classList.contains("fm-row")){
-    if (t.dataset.dir === "true"){ state.fmPath = t.dataset.path; renderFiles(); return; }
-    const r = await get("/api/files/read?path=" + encodeURIComponent(t.dataset.path));
-    openFileEditor(r); return;
-  }
 
   // code block actions
   if (act === "copy-code"){
     const code = document.getElementById(id);
     const raw = code?.dataset.raw || code?.textContent || "";
-    try { await navigator.clipboard.writeText(raw); toast("Скопировано", "ok"); }
-    catch(_){ toast("Не удалось скопировать", "error"); }
+    const ok = await copyText(raw);
+    toast(ok ? "Скопировано" : "Не удалось скопировать", ok ? "ok" : "error");
     return;
   }
   if (act === "run-code" || act === "run-snippet"){
@@ -4309,35 +4518,7 @@ document.addEventListener("click", async ev => {
     return;
   }
 
-  // poll
-  const polo = ev.target.closest(".poll-opt");
-  if (polo){
-    const pollEl = polo.parentElement.parentElement;
-    const mid = pollEl.dataset.msg;
-    const multi = pollEl.dataset.multi === "true";
-    const i = +polo.dataset.i;
-    let cur = state.pollAnswers[mid] || (multi ? [] : null);
-    if (multi){
-      if (!Array.isArray(cur)) cur = [];
-      if (cur.includes(i)) cur = cur.filter(x => x !== i); else cur.push(i);
-    } else {
-      cur = i;
-    }
-    state.pollAnswers[mid] = cur;
-    try { await post(`/api/messages/${mid}/poll`, {answer: cur}); }
-    catch(_){}
-    renderMessages();
-    return;
-  }
-
-  // hint chip click
-  if (t.classList.contains("hint")){
-    const p = t.dataset.prompt || "";
-    $("#msg").value = p;
-    resizeTextarea();
-    $("#msg").focus();
-    return;
-  }
+  // (poll and hint clicks are handled by the class-hook section above)
 
   // generic agent action buttons
   if (act === "ask" || act === "next"){
@@ -4390,53 +4571,136 @@ function openFileEditor(info){
 
 function name(p){ return (p||"").split("/").pop(); }
 
-/* ───────── Long press context menu ───────── */
-let pressTimer = null, pressEl = null;
+/* ───────── Copy helper (clipboard API + execCommand fallback) ───────── */
+async function copyText(text){
+  if (!text) text = "";
+  // Modern API requires secure context. localhost qualifies, but inside a
+  // WebView (Telegram, etc.) it may be undefined — fall back to a hidden
+  // <textarea> + execCommand.
+  if (navigator.clipboard && window.isSecureContext){
+    try { await navigator.clipboard.writeText(text); return true; } catch(_){}
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return !!ok;
+  } catch(_){ return false; }
+}
+
+/* ───────── Long-press / context menu ─────────
+ *
+ * Single-instance menu.  Closes on:
+ *   • tap or touchstart anywhere outside the menu;
+ *   • Esc key;
+ *   • scroll inside #scroll;
+ *   • orientation/resize.
+ *
+ * Long-press is canceled if the finger moves more than 8px before the
+ * 480 ms threshold (so accidental scrolls don't trigger it).
+ */
+let pressTimer = null, pressOrigin = null;
+const LONG_PRESS_MS = 460;
+const LONG_PRESS_MOVE_PX = 8;
+
+function _clearPress(){ clearTimeout(pressTimer); pressTimer = null; pressOrigin = null; }
+
 document.addEventListener("touchstart", e => {
+  // close any open menu if user starts a new touch outside it
+  if (state.ctxMenu && !e.target.closest(".menu")){
+    closeCtxMenu();
+  }
   const m = e.target.closest(".msg");
   if (!m) return;
-  pressEl = m;
+  // ignore presses that originate on interactive children — let buttons,
+  // links, code, polls receive their own click instead.
+  if (e.target.closest("a,button,input,textarea,select,.poll-opt,.attach,.code,details>summary")) return;
+  const t = e.touches[0];
+  pressOrigin = {x: t.clientX, y: t.clientY};
   clearTimeout(pressTimer);
   pressTimer = setTimeout(() => {
-    showCtxMenu(e.touches[0].clientX, e.touches[0].clientY, m);
+    if (pressOrigin){
+      showCtxMenu(pressOrigin.x, pressOrigin.y, m);
+    }
     pressTimer = null;
-  }, 480);
+  }, LONG_PRESS_MS);
 }, {passive:true});
-document.addEventListener("touchmove", () => { clearTimeout(pressTimer); pressTimer = null; }, {passive:true});
-document.addEventListener("touchend", () => { clearTimeout(pressTimer); pressTimer = null; }, {passive:true});
+
+document.addEventListener("touchmove", e => {
+  if (!pressTimer || !pressOrigin) return;
+  const t = e.touches[0];
+  const dx = t.clientX - pressOrigin.x, dy = t.clientY - pressOrigin.y;
+  if (dx*dx + dy*dy > LONG_PRESS_MOVE_PX * LONG_PRESS_MOVE_PX) _clearPress();
+}, {passive:true});
+
+document.addEventListener("touchend", _clearPress, {passive:true});
+document.addEventListener("touchcancel", _clearPress, {passive:true});
+
 document.addEventListener("contextmenu", e => {
   const m = e.target.closest(".msg");
   if (!m) return;
+  // skip if the right-click landed on something interactive
+  if (e.target.closest("a,button,input,textarea,select,.poll-opt,.code")) return;
   e.preventDefault();
   showCtxMenu(e.clientX, e.clientY, m);
 });
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && state.ctxMenu){ closeCtxMenu(); }
+});
+
+window.addEventListener("resize", () => state.ctxMenu && closeCtxMenu());
+
+function closeCtxMenu(){
+  if (!state.ctxMenu) return;
+  const m = state.ctxMenu;
+  state.ctxMenu = null;
+  m.classList.add("closing");
+  setTimeout(() => { try { m.remove(); } catch(_){} }, 120);
+}
 
 function showCtxMenu(x, y, msgEl){
   const id = msgEl.dataset.id;
   const msg = state.messages.find(m => m.id === id);
   if (!msg) return;
+  // Single instance — replace any prior menu.
+  if (state.ctxMenu){ try { state.ctxMenu.remove(); } catch(_){} state.ctxMenu = null; }
   const menu = document.createElement("div");
-  menu.className = "menu";
-  menu.style.left = Math.min(x, window.innerWidth - 220) + "px";
-  menu.style.top  = Math.min(y, window.innerHeight - 220) + "px";
+  menu.className = "menu menu-ctx";
+  menu.setAttribute("role","menu");
   menu.innerHTML = `
-    <div class="item" data-cm="copy">${svgs.copy}<span>Скопировать</span></div>
-    <div class="item" data-cm="quote">${svgs.brain}<span>Цитировать</span></div>
-    ${msg.role==="user" ? `<div class="item" data-cm="edit">${svgs.edit}<span>Редактировать</span></div>` : ""}
-    <div class="item" data-cm="retry">${svgs.retry}<span>Спросить снова</span></div>
+    <div class="item" role="menuitem" data-cm="copy">${svgs.copy}<span>Скопировать</span></div>
+    <div class="item" role="menuitem" data-cm="quote">${svgs.brain}<span>Цитировать</span></div>
+    ${msg.role==="user" ? `<div class="item" role="menuitem" data-cm="edit">${svgs.edit}<span>Редактировать</span></div>` : ""}
+    <div class="item" role="menuitem" data-cm="retry">${svgs.retry}<span>Спросить снова</span></div>
     <div class="sep"></div>
-    <div class="item danger" data-cm="del">${svgs.trash}<span>Удалить</span></div>
+    <div class="item danger" role="menuitem" data-cm="del">${svgs.trash}<span>Удалить</span></div>
   `;
   document.body.appendChild(menu);
+  // Position with viewport clamping (after measure).
+  const W = menu.offsetWidth || 220, H = menu.offsetHeight || 220;
+  const px = Math.max(8, Math.min(x, window.innerWidth - W - 8));
+  const py = Math.max(8, Math.min(y, window.innerHeight - H - 8));
+  menu.style.left = px + "px";
+  menu.style.top  = py + "px";
   state.ctxMenu = menu;
+  // Animation
+  requestAnimationFrame(() => menu.classList.add("open"));
+  // Bind
   menu.addEventListener("click", async ev => {
     const i = ev.target.closest("[data-cm]");
     if (!i) return;
     const op = i.dataset.cm;
-    menu.remove(); state.ctxMenu = null;
+    closeCtxMenu();
     if (op === "copy"){
-      try { await navigator.clipboard.writeText(msg.content || ""); toast("Скопировано", "ok"); }
-      catch(_){ toast("Не удалось", "error"); }
+      const ok = await copyText(msg.content || "");
+      toast(ok ? "Скопировано" : "Не удалось скопировать", ok ? "ok" : "error");
     } else if (op === "quote"){
       const ta = $("#msg");
       ta.value = (msg.content||"").split("\n").map(x => "> " + x).join("\n") + "\n\n";
@@ -4452,6 +4716,10 @@ function showCtxMenu(x, y, msgEl){
       catch(e){ toast(e.message, "error"); }
     }
   });
+  // Close menu on chat scroll
+  const sc = $("#scroll");
+  const onScroll = () => { closeCtxMenu(); sc.removeEventListener("scroll", onScroll, true); };
+  sc.addEventListener("scroll", onScroll, true);
 }
 
 /* ───────── Gestures: drawer swipe-from-left, sheet drag-to-dismiss ───────── */
