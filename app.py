@@ -2892,10 +2892,14 @@ img{max-width:100%;display:block;}
   background:rgba(0,0,0,.18);
   font-size:11px;color:var(--text-mute);text-transform:uppercase;letter-spacing:1px;
 }
-.code-lang{flex:1;font-weight:600;}
+.code-lang{flex:1;font-weight:600;display:flex;align-items:baseline;gap:8px;}
+.code-meta{font-weight:400;color:var(--text-mute);font-size:10px;letter-spacing:0;text-transform:none;}
 .code-actions{display:flex;gap:2px;}
 .code-actions .btn-icon{width:30px;height:30px;border-radius:8px;}
 .code-actions .btn-icon svg{width:14px;height:14px;}
+.code.collapsed pre{display:none;}
+.code-preview{margin:6px 0 14px 0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff;}
+.code-preview iframe{border:0;width:100%;height:280px;display:block;background:#fff;}
 .code pre{
   margin:0;padding:12px 14px;overflow-x:auto;
   font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
@@ -3075,6 +3079,9 @@ img{max-width:100%;display:block;}
 .test-cases{padding:6px 0;}
 .test-case{padding:6px 14px;display:flex;align-items:center;gap:8px;font-family:"SF Mono",monospace;font-size:12px;color:var(--text-dim);}
 .test-case .pill{padding:1px 6px;border-radius:6px;background:var(--bg-3);font-size:10px;text-transform:uppercase;}
+.test-case .test-mark{margin-left:auto;font-weight:600;font-size:11px;}
+.test.running{opacity:.85;}
+.test-head .btn{margin-left:auto;font-size:12px;padding:5px 10px;}
 
 /* ───────── Run output ───────── */
 .run-out{
@@ -3230,6 +3237,22 @@ img{max-width:100%;display:block;}
 #model-status .ms-paid{color:#a78bfa;}
 #model-status .ms-nokey{color:var(--text-mute);}
 #model-status .ms-err{color:var(--bad);}
+#model-status .ms-tier{color:#fbbf24;cursor:pointer;font-weight:600;}
+#model-status .ms-tier:hover{filter:brightness(1.2);}
+#model-status .ms-ver{color:var(--text-mute);}
+
+/* Tier picker */
+.tier-bar{height:8px;border-radius:99px;background:var(--bg-3);overflow:hidden;margin-top:6px;}
+.tier-fill{height:100%;background:linear-gradient(90deg, #34d399 0%, #fbbf24 75%, #ef4444 100%);transition:width .3s var(--ease);}
+.tier-stat{display:flex;justify-content:space-between;font-size:12px;color:var(--text-mute);margin-top:6px;}
+.tier-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:14px;}
+.tier-card{background:var(--bg-2);border:1px solid var(--border);border-radius:14px;padding:12px;display:flex;flex-direction:column;gap:8px;transition:border-color .2s, transform .15s;}
+.tier-card.active{border-color:#fbbf24;box-shadow:0 0 0 3px rgba(251,191,36,.16);}
+.tier-card .tier-head{display:flex;align-items:center;justify-content:space-between;gap:6px;}
+.tier-card .tier-head .pill{font-size:10px;background:#fbbf24;color:#1a1a1a;padding:2px 6px;border-radius:99px;font-weight:700;}
+.tier-card .tier-body{display:flex;flex-direction:column;gap:4px;font-size:13px;color:var(--text-mute);}
+.tier-card .tier-body b{color:var(--text);}
+.tier-card button{margin-top:auto;}
 
 /* File manager */
 .fm-toolbar{display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap;}
@@ -3264,10 +3287,11 @@ img{max-width:100%;display:block;}
 /* Context menu */
 .menu{
   position:fixed;background:var(--bg-3);border:1px solid var(--line);border-radius:14px;
-  box-shadow:var(--shadow-lg);z-index:120;padding:4px;min-width:208px;max-width:280px;
+  box-shadow:var(--shadow-lg);z-index:120;padding:4px;min-width:240px;max-width:320px;
   opacity:0;transform:scale(.92) translateY(-4px);transform-origin:top left;
   transition:opacity .14s var(--ease), transform .14s var(--ease);
   user-select:none;-webkit-user-select:none;touch-action:manipulation;
+  backdrop-filter:saturate(1.2) blur(8px);
 }
 .menu.open{opacity:1;transform:scale(1) translateY(0);}
 .menu.closing{opacity:0;transform:scale(.96) translateY(-2px);pointer-events:none;}
@@ -3278,9 +3302,28 @@ img{max-width:100%;display:block;}
 .menu .item:hover,.menu .item:active{background:var(--bg-4);}
 .menu .item svg{width:16px;height:16px;color:var(--text-dim);flex-shrink:0;}
 .menu .item span{flex:1;}
+.menu .item kbd{font-size:11px;color:var(--text-mute);background:var(--bg-2);padding:1px 5px;border-radius:4px;border:1px solid var(--line);}
 .menu .sep{height:1px;background:var(--line);margin:4px 6px;}
 .menu .item.danger{color:var(--bad);}
 .menu .item.danger svg{color:var(--bad);}
+.menu .item.ghost{justify-content:center;color:var(--text-mute);font-weight:600;}
+
+/* Mobile: render as bottom sheet */
+.menu-sheet{
+  left:0!important;right:0!important;bottom:0!important;top:auto!important;
+  width:100%!important;max-width:100%!important;min-width:0!important;
+  border-radius:18px 18px 0 0;border-bottom:0;
+  padding:8px 8px max(env(safe-area-inset-bottom), 12px) 8px;
+  transform:translateY(100%)!important;
+  transform-origin:bottom center;
+}
+.menu-sheet.open{transform:translateY(0)!important;}
+.menu-sheet.closing{transform:translateY(8%)!important;}
+.menu-sheet .item{padding:14px 14px;font-size:15px;}
+.menu-sheet::before{
+  content:"";display:block;width:38px;height:4px;border-radius:99px;
+  background:var(--line);margin:4px auto 8px auto;
+}
 
 /* Image */
 .bubble img.gen{
@@ -3340,7 +3383,7 @@ img{max-width:100%;display:block;}
     </button>
     <div class="title" id="title">
       <h1 id="chat-title">TsukCat AI</h1>
-      <small><b id="model-status">Модели: …</b> · v__VERSION__</small>
+      <small><b id="model-status">Модели: …</b></small>
     </div>
     <button class="btn-icon ripple" data-act="files" aria-label="Файлы">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
@@ -3525,6 +3568,8 @@ const svgs = {
   more:    `<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="6" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="18" r="2"/></svg>`,
   shield:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
   test:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6L4 20a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L15 8V2"/><path d="M9 2h6"/></svg>`,
+  eye:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  fold:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`,
 };
 
 /* ───────── Markdown (lightweight) ───────── */
@@ -3768,21 +3813,25 @@ function renderMarkdown(md){
 
 function renderCodeBlock(code, lang){
   const id = "c" + Math.random().toString(36).slice(2,9);
-  const safeLang = lang.toLowerCase().replace(/[^a-z0-9+#-]/g, "");
-  const isRunnable = ["python","py","python3","bash","sh"].includes(safeLang);
-  const html = `
+  const safeLang = (lang||"").toLowerCase().replace(/[^a-z0-9+#-]/g, "");
+  const isRunnable = ["python","py","python3","bash","sh","shell","zsh"].includes(safeLang);
+  const isPreview  = ["html","htm","svg"].includes(safeLang);
+  const lines = (code||"").split("\n").length;
+  const langLabel = safeLang || "txt";
+  return `
     <div class="code" data-lang="${escapeHTML(safeLang)}">
       <div class="code-head">
-        <div class="code-lang">${escapeHTML(safeLang || "txt")}</div>
+        <div class="code-lang">${escapeHTML(langLabel)} <span class="code-meta">${lines} строк</span></div>
         <div class="code-actions">
           <button class="btn-icon" title="Скопировать" data-act="copy-code" data-id="${id}">${svgs.copy}</button>
           ${isRunnable ? `<button class="btn-icon" title="Запустить" data-act="run-code" data-id="${id}">${svgs.run}</button>` : ""}
+          ${isPreview  ? `<button class="btn-icon" title="Предпросмотр" data-act="preview-code" data-id="${id}" data-lang="${escapeHTML(safeLang)}">${svgs.eye||svgs.run}</button>` : ""}
+          <button class="btn-icon" title="Свернуть" data-act="toggle-code" data-id="${id}">${svgs.fold||"≡"}</button>
           <button class="btn-icon" title="Сохранить как файл" data-act="save-code" data-id="${id}">${svgs.save}</button>
         </div>
       </div>
       <pre><code id="${id}" data-raw="${escapeHTML(code)}">${highlightCode(code, safeLang)}</code></pre>
     </div>`;
-  return html;
 }
 
 /* ───────── Plan / poll / buttons / file widgets ───────── */
@@ -3891,9 +3940,19 @@ function renderEdit(b){
 }
 function renderTest(b){
   const cs = (b.cases||[]);
-  return `<div class="test">
-    <div class="test-head">${svgs.test}<div class="ttl">${escapeHTML(b.title||"Тест")}</div></div>
-    <div class="test-cases">${cs.map(c=>`<div class="test-case"><span class="pill">case</span><span>${escapeHTML(c.call||c.name||"")}</span> → <span>${escapeHTML(JSON.stringify(c.expect))}</span></div>`).join("")}</div>
+  const tid = "tst" + Math.random().toString(36).slice(2,8);
+  // Encode the test data so we can read it from JS without re-parsing.
+  const data = encodeURIComponent(JSON.stringify({lang: b.lang||"python", setup: b.setup||"", cases: cs}));
+  return `<div class="test" id="${tid}" data-test="${data}">
+    <div class="test-head">
+      ${svgs.test}<div class="ttl">${escapeHTML(b.title||"Тест")}</div>
+      <button class="btn ripple" data-act="run-test" data-id="${tid}">${svgs.run}<span>Запустить тесты</span></button>
+    </div>
+    <div class="test-cases">${cs.map((c,i)=>`<div class="test-case" data-i="${i}">
+      <span class="pill">case ${i+1}</span>
+      <span>${escapeHTML(c.call||c.name||"")}</span> → <span>${escapeHTML(JSON.stringify(c.expect))}</span>
+      <span class="test-mark"></span>
+    </div>`).join("")}</div>
   </div>`;
 }
 
@@ -4436,6 +4495,15 @@ async function refreshHealth(quiet=true){
     if (counts.paid)       parts.push(`<span class="ms-paid">●</span> ${counts.paid} платно`);
     if (counts.no_key)     parts.push(`<span class="ms-nokey">●</span> ${counts.no_key} без ключа`);
     if (counts.error)      parts.push(`<span class="ms-err">●</span> ${counts.error} ошибок`);
+    // Append tier/token usage if present.
+    const tier = state.state?.tier;
+    if (tier){
+      const k = (n) => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+"M"
+                       : n >= 1_000     ? (n/1_000).toFixed(1)+"k"
+                       :                   String(n);
+      parts.push(`<span class="ms-tier" data-act="open-tier" title="Тариф · клик для смены">⌬ ${escapeHTML(tier.name)} · ${k(tier.tokens_used)} / ${k(tier.monthly_tokens)}</span>`);
+    }
+    parts.push(`<span class="ms-ver">v${escapeHTML(state.state?.version||"")}</span>`);
     $("#model-status").innerHTML = parts.length ? parts.join(" · ") : `${total} моделей`;
     const live = (counts.online||0) + (counts.configured||0);
     document.title = `TsukCat AI · ${live}/${total}`;
@@ -4473,6 +4541,30 @@ function settingsSheet(){
         <button class="btn danger ripple" data-act="delete-chat">${svgs.trash}<span>Удалить чат</span></button>
       </div>`;
     }},
+    {label: "Тариф", render: () => {
+      const t = state.state?.tier || {id:"free", name:"Free", monthly_tokens:200000, tokens_used:0, pct:0, all_tiers:[]};
+      const k = (n) => n >= 1_000_000 ? (n/1_000_000).toFixed(1)+"M" : n >= 1_000 ? (n/1_000).toFixed(1)+"k" : String(n);
+      const cards = (t.all_tiers||[]).map(x => `
+        <div class="tier-card ${x.id===t.id?'active':''}">
+          <div class="tier-head">
+            <b>${escapeHTML(x.name)}</b>
+            ${x.id===t.id?'<span class="pill">текущий</span>':''}
+          </div>
+          <div class="tier-body">
+            <div>Токенов в месяц: <b>${k(x.monthly_tokens)}</b></div>
+            <div>Параллельных задач: <b>${x.concurrent}</b></div>
+          </div>
+          ${x.id===t.id?'':`<button class="btn ripple" data-act="set-tier" data-tier="${escapeHTML(x.id)}">Перейти</button>`}
+        </div>
+      `).join("");
+      return `<div class="field">
+        <label>Использование за месяц</label>
+        <div class="tier-bar"><div class="tier-fill" style="width:${t.pct}%"></div></div>
+        <div class="tier-stat"><span>${k(t.tokens_used)} / ${k(t.monthly_tokens)} токенов</span><span>${t.pct}%</span></div>
+      </div>
+      <div class="tier-grid">${cards}</div>
+      <p class="field hint">Это локальный учёт токенов (приблизительный, ~4 символа = 1 токен). Реальные платежи отключены — это демо-режим. Тариф сохраняется в <code>${escapeHTML(state.state?.data_dir||"")}/tier.json</code>.</p>`;
+    }},
     {label: "О приложении", render: () => {
       const s = state.state || {};
       return `<div class="field"><label>App</label><div>${escapeHTML(s.app||"")}</div></div>
@@ -4485,6 +4577,17 @@ function settingsSheet(){
     }},
   ];
   openSheet({title: "Настройки", tabs});
+}
+
+function tierSheet(){
+  // Open Settings sheet directly on the Tier tab.
+  settingsSheet();
+  // Click the Тариф tab.
+  setTimeout(() => {
+    const tabs = $$("#sheet-tabs .sheet-tab");
+    const target = tabs.find(t => t.textContent.trim() === "Тариф");
+    if (target) target.click();
+  }, 30);
 }
 
 /* ───────── Files sheet ───────── */
@@ -4598,6 +4701,7 @@ document.addEventListener("click", async ev => {
   if (act === "settings"){ settingsSheet(); return; }
   if (act === "files"){ filesSheet(""); return; }
   if (act === "close-sheet"){ closeSheet(); return; }
+  if (act === "open-tier"){ tierSheet(); return; }
   if (act === "attach"){ $("#file-pick").click(); return; }
   if (act === "new-chat"){
     const c = await post("/api/chats", {title: "Новый чат"});
@@ -4627,6 +4731,21 @@ document.addEventListener("click", async ev => {
   if (act === "ping-all"){
     refreshHealth(false);
     setTimeout(() => settingsSheet(), 1500);
+    return;
+  }
+  if (act === "set-tier"){
+    const tid = t.dataset.tier;
+    if (!tid) return;
+    try {
+      const r = await post("/api/tier", {tier: tid});
+      if (state.state) state.state.tier = r;
+      toast(`Тариф: ${r.name}`, "ok");
+      // Refresh just the tier tab.
+      const active = $$("#sheet-tabs .sheet-tab").find(x => x.textContent.trim() === "Тариф");
+      if (active) active.click();
+      // Repaint header.
+      refreshHealth(true);
+    } catch(e){ toast(e.message, "error"); }
     return;
   }
 
@@ -4687,6 +4806,79 @@ document.addEventListener("click", async ev => {
       await post("/api/files/save", {path: "snippets/" + name, content: raw});
       toast("Сохранено в files/snippets/" + name, "ok");
     } catch(e){ toast(e.message, "error"); }
+    return;
+  }
+  if (act === "preview-code"){
+    const code = document.getElementById(id);
+    const raw = code?.dataset.raw || "";
+    const lng = (code?.closest(".code")?.dataset.lang || lang || "html").toLowerCase();
+    const wrap = code?.closest(".code");
+    if (!wrap) return;
+    let frame = wrap.nextElementSibling;
+    if (frame && frame.classList && frame.classList.contains("code-preview")){
+      frame.remove();
+      return;
+    }
+    frame = document.createElement("div");
+    frame.className = "code-preview";
+    let body = raw;
+    if (lng === "svg"){
+      body = `<!doctype html><html><body style="margin:0;background:#fff">${raw}</body></html>`;
+    } else if (lng === "html" || lng === "htm"){
+      body = raw.toLowerCase().includes("<html") ? raw : `<!doctype html><html><body style="font-family:system-ui">${raw}</body></html>`;
+    }
+    const blob = new Blob([body], {type: "text/html;charset=utf-8"});
+    const url = URL.createObjectURL(blob);
+    frame.innerHTML = `<iframe sandbox="allow-scripts" src="${url}" loading="lazy"></iframe>`;
+    wrap.parentNode.insertBefore(frame, wrap.nextSibling);
+    return;
+  }
+  if (act === "toggle-code"){
+    const code = document.getElementById(id);
+    const wrap = code?.closest(".code");
+    if (!wrap) return;
+    wrap.classList.toggle("collapsed");
+    return;
+  }
+  if (act === "run-test"){
+    const wrap = document.getElementById(id);
+    if (!wrap) return;
+    let data;
+    try { data = JSON.parse(decodeURIComponent(wrap.dataset.test||"")); }
+    catch(_){ return toast("Тест: повреждённые данные", "error"); }
+    const lang = data.lang || "python";
+    const setup = data.setup || "";
+    const cases = data.cases || [];
+    if (!cases.length) return toast("Нет тест-кейсов", "error");
+    wrap.classList.add("running");
+    let passed = 0;
+    for (let i = 0; i < cases.length; i++){
+      const c = cases[i];
+      const node = wrap.querySelector(`.test-case[data-i='${i}'] .test-mark`);
+      if (node) node.textContent = "…";
+      // Build a script that runs the case and prints either OK or FAIL with details.
+      let script = "";
+      const expect = JSON.stringify(c.expect ?? null);
+      if (lang === "python" || lang === "py"){
+        script = `${setup}\nimport json\ntry:\n  __r=${c.call}\nexcept Exception as e:\n  print('FAIL: exception', repr(e)); raise SystemExit(1)\n_e=json.loads(${JSON.stringify(expect)})\nprint('OK' if __r==_e else f'FAIL: got={__r!r} expected={_e!r}')\n`;
+      } else if (lang === "bash" || lang === "sh"){
+        script = `${setup}\n_e=${expect}\n_r=$(${c.call})\nif [ "$_r" = "$_e" ]; then echo OK; else echo "FAIL: got=$_r expected=$_e"; fi`;
+      } else {
+        if (node) node.innerHTML = '<span style="color:var(--text-mute)">unsupported</span>';
+        continue;
+      }
+      try {
+        const r = await post("/api/run", {lang, code: script});
+        const out = (r.stdout||"").trim();
+        const ok = /^OK\b/m.test(out) && r.ok;
+        if (node) node.innerHTML = ok ? '<span style="color:var(--good)">✓ ok</span>' : `<span style="color:var(--bad)" title="${escapeHTML(out)}">✗ fail</span>`;
+        if (ok) passed++;
+      } catch(e){
+        if (node) node.innerHTML = `<span style="color:var(--bad)">✗ ${escapeHTML(e.message||"error")}</span>`;
+      }
+    }
+    wrap.classList.remove("running");
+    toast(`${passed}/${cases.length} тестов прошли`, passed === cases.length ? "ok" : "error");
     return;
   }
 
@@ -4890,23 +5082,32 @@ function showCtxMenu(x, y, msgEl){
   // Single instance — replace any prior menu.
   if (state.ctxMenu){ try { state.ctxMenu.remove(); } catch(_){} state.ctxMenu = null; }
   const menu = document.createElement("div");
-  menu.className = "menu menu-ctx";
+  const isMobile = window.matchMedia("(max-width: 720px)").matches;
+  menu.className = "menu menu-ctx" + (isMobile ? " menu-sheet" : "");
   menu.setAttribute("role","menu");
+  const isUser = msg.role === "user";
   menu.innerHTML = `
-    <div class="item" role="menuitem" data-cm="copy">${svgs.copy}<span>Скопировать</span></div>
+    <div class="item" role="menuitem" data-cm="copy">${svgs.copy}<span>Скопировать</span><kbd>⌘C</kbd></div>
     <div class="item" role="menuitem" data-cm="quote">${svgs.brain}<span>Цитировать</span></div>
-    ${msg.role==="user" ? `<div class="item" role="menuitem" data-cm="edit">${svgs.edit}<span>Редактировать</span></div>` : ""}
-    <div class="item" role="menuitem" data-cm="retry">${svgs.retry}<span>Спросить снова</span></div>
+    <div class="item" role="menuitem" data-cm="reply">${svgs.retry}<span>Ответить</span></div>
+    ${isUser ? `<div class="item" role="menuitem" data-cm="edit">${svgs.edit}<span>Редактировать</span></div>` : ""}
+    <div class="item" role="menuitem" data-cm="retry">${svgs.retry}<span>${isUser ? "Отправить снова" : "Спросить снова"}</span></div>
+    ${!isUser && msg.content ? `<div class="item" role="menuitem" data-cm="continue">${svgs.run||""}<span>Продолжить ответ</span></div>` : ""}
+    <div class="item" role="menuitem" data-cm="copy-md">${svgs.copy}<span>Скопировать как Markdown</span></div>
+    <div class="item" role="menuitem" data-cm="copy-text">${svgs.copy}<span>Скопировать как текст</span></div>
     <div class="sep"></div>
     <div class="item danger" role="menuitem" data-cm="del">${svgs.trash}<span>Удалить</span></div>
+    ${isMobile ? `<div class="sep"></div><div class="item ghost" role="menuitem" data-cm="cancel"><span>Отмена</span></div>` : ""}
   `;
   document.body.appendChild(menu);
-  // Position with viewport clamping (after measure).
-  const W = menu.offsetWidth || 220, H = menu.offsetHeight || 220;
-  const px = Math.max(8, Math.min(x, window.innerWidth - W - 8));
-  const py = Math.max(8, Math.min(y, window.innerHeight - H - 8));
-  menu.style.left = px + "px";
-  menu.style.top  = py + "px";
+  if (!isMobile){
+    // Position with viewport clamping (after measure).
+    const W = menu.offsetWidth || 220, H = menu.offsetHeight || 220;
+    const px = Math.max(8, Math.min(x, window.innerWidth - W - 8));
+    const py = Math.max(8, Math.min(y, window.innerHeight - H - 8));
+    menu.style.left = px + "px";
+    menu.style.top  = py + "px";
+  }
   state.ctxMenu = menu;
   // Animation
   requestAnimationFrame(() => menu.classList.add("open"));
@@ -4916,23 +5117,50 @@ function showCtxMenu(x, y, msgEl){
     if (!i) return;
     const op = i.dataset.cm;
     closeCtxMenu();
-    if (op === "copy"){
-      const ok = await copyText(msg.content || "");
+    const text = msg.content || "";
+    if (op === "copy" || op === "copy-md"){
+      const ok = await copyText(text);
       toast(ok ? "Скопировано" : "Не удалось скопировать", ok ? "ok" : "error");
-    } else if (op === "quote"){
+    } else if (op === "copy-text"){
+      // Strip markdown to plain text.
+      const plain = text.replace(/```[\s\S]*?```/g, m => m.replace(/```[a-zA-Z]*\n?/g, "").replace(/```$/, ""))
+                       .replace(/`([^`]+)`/g, "$1")
+                       .replace(/\*\*([^*]+)\*\*/g, "$1")
+                       .replace(/\*([^*]+)\*/g, "$1")
+                       .replace(/^#+\s*/gm, "");
+      const ok = await copyText(plain);
+      toast(ok ? "Скопировано" : "Не удалось скопировать", ok ? "ok" : "error");
+    } else if (op === "quote" || op === "reply"){
       const ta = $("#msg");
-      ta.value = (msg.content||"").split("\n").map(x => "> " + x).join("\n") + "\n\n";
+      const quoted = text.split("\n").map(x => "> " + x).join("\n");
+      ta.value = quoted + "\n\n";
       resizeTextarea(); ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
     } else if (op === "edit"){
-      $("#msg").value = msg.content || "";
+      $("#msg").value = text;
       resizeTextarea(); $("#msg").focus();
     } else if (op === "retry"){
-      $("#msg").value = msg.content || "";
+      // For an assistant message, ask again from the previous user msg.
+      if (!isUser){
+        const idx = state.messages.findIndex(m => m.id === id);
+        for (let i = idx - 1; i >= 0; i--){
+          if (state.messages[i].role === "user"){
+            $("#msg").value = state.messages[i].content || "";
+            resizeTextarea(); sendMessage();
+            return;
+          }
+        }
+      }
+      $("#msg").value = text;
+      resizeTextarea(); sendMessage();
+    } else if (op === "continue"){
+      $("#msg").value = "Продолжай.";
       resizeTextarea(); sendMessage();
     } else if (op === "del"){
       try { await del(`/api/messages/${id}`); openChat(state.chatId); }
       catch(e){ toast(e.message, "error"); }
     }
+    // op === "cancel" → just closes (already done above).
   });
   // Close menu on chat scroll
   const sc = $("#scroll");
