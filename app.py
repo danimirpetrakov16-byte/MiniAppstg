@@ -80,7 +80,7 @@ except Exception:
 # Constants & paths
 # ────────────────────────────────────────────────────────────────────
 APP_NAME = "TsukCat AI"
-APP_VERSION = "6.0"
+APP_VERSION = "7.0"
 APP_OWNER = "@tsuklone"
 DEFAULT_PORT = 7860
 DEFAULT_HOST = "0.0.0.0"
@@ -1772,7 +1772,113 @@ def materialize_files(blocks: List[Dict[str, Any]], chat_id: str, message_id: st
 # ────────────────────────────────────────────────────────────────────
 
 
-def run_python(source: str, timeout: int = 8) -> Dict[str, Any]:
+# Modules from the stdlib that should NEVER be pip-installed.
+_PY_STDLIB = {
+    "abc","argparse","array","ast","asyncio","base64","binascii","bisect","builtins",
+    "bz2","calendar","cmath","cmd","collections","concurrent","configparser","contextlib",
+    "contextvars","copy","csv","ctypes","datetime","dataclasses","decimal","difflib",
+    "dis","email","enum","errno","faulthandler","filecmp","fileinput","fnmatch",
+    "fractions","ftplib","functools","gc","getopt","getpass","gettext","glob","gzip",
+    "hashlib","heapq","hmac","html","http","imaplib","importlib","inspect","io",
+    "ipaddress","itertools","json","keyword","linecache","locale","logging","lzma",
+    "mailbox","math","mimetypes","multiprocessing","netrc","numbers","operator","os",
+    "pathlib","pickle","pkgutil","platform","plistlib","poplib","posixpath","pprint",
+    "queue","random","re","reprlib","secrets","select","selectors","shelve","shlex",
+    "shutil","signal","site","smtplib","socket","socketserver","sqlite3","ssl","stat",
+    "statistics","string","stringprep","struct","subprocess","sys","sysconfig","tabnanny",
+    "tarfile","tempfile","textwrap","threading","time","timeit","token","tokenize",
+    "trace","traceback","types","typing","unicodedata","unittest","urllib","uuid",
+    "venv","warnings","weakref","webbrowser","wsgiref","xml","xmlrpc","zipfile",
+    "zipimport","zlib","zoneinfo","__future__",
+}
+# Common PyPI rename map: import-name -> package-name.
+_PIP_RENAME = {
+    "cv2": "opencv-python",
+    "PIL": "pillow",
+    "Image": "pillow",
+    "sklearn": "scikit-learn",
+    "skimage": "scikit-image",
+    "bs4": "beautifulsoup4",
+    "yaml": "pyyaml",
+    "dotenv": "python-dotenv",
+    "telegram": "python-telegram-bot",
+    "Crypto": "pycryptodome",
+    "google": "google-api-python-client",
+    "OpenSSL": "pyopenssl",
+    "tinydb": "tinydb",
+}
+
+
+def _detect_imports(source: str) -> list:
+    """Extract top-level import names from python source."""
+    import re as _re
+    out = []
+    seen = set()
+    for line in source.splitlines():
+        ln = line.strip()
+        if not ln or ln.startswith("#"):
+            continue
+        m = _re.match(r"^(?:from|import)\s+([a-zA-Z_][\w]*)", ln)
+        if not m:
+            continue
+        mod = m.group(1)
+        if mod in seen:
+            continue
+        seen.add(mod)
+        if mod in _PY_STDLIB:
+            continue
+        out.append(mod)
+    return out
+
+
+def _pip_install(packages: list, timeout: int = 60) -> Dict[str, Any]:
+    """pip install <packages> with --user --quiet. Returns {ok, stderr}."""
+    if not packages:
+        return {"ok": True, "installed": [], "stderr": ""}
+    pkgs = [_PIP_RENAME.get(p, p) for p in packages]
+    try:
+        res = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--user", "--quiet",
+             "--disable-pip-version-check", "--no-input"] + pkgs,
+            capture_output=True,
+            timeout=timeout,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": os.environ.get("HOME", "/tmp")},
+        )
+        return {
+            "ok": res.returncode == 0,
+            "installed": pkgs,
+            "stderr": res.stderr.decode("utf-8", errors="replace"),
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "installed": [], "stderr": f"pip install timeout after {timeout}s"}
+    except Exception as exc:
+        return {"ok": False, "installed": [], "stderr": f"{type(exc).__name__}: {exc}"}
+
+
+def run_python(source: str, timeout: int = 8, auto_install: bool = True) -> Dict[str, Any]:
+    install_log = ""
+    if auto_install:
+        # Try once. If imports succeed, no install happens; if some imports
+        # are missing, we pip-install them and try again.
+        try:
+            mods = _detect_imports(source)
+            missing = []
+            for m in mods:
+                # quick import test in a subprocess to avoid polluting our env
+                t = subprocess.run(
+                    [sys.executable, "-c", f"import {m}"],
+                    capture_output=True, timeout=4,
+                    env={"PATH": os.environ.get("PATH", "")},
+                )
+                if t.returncode != 0:
+                    missing.append(m)
+            if missing:
+                ir = _pip_install(missing)
+                install_log = f"[pip] installed: {', '.join(ir.get('installed') or missing)}\n"
+                if not ir.get("ok") and ir.get("stderr"):
+                    install_log += f"[pip-stderr]\n{ir['stderr']}\n"
+        except Exception as exc:  # noqa: BLE001
+            install_log = f"[pip] auto-install skipped: {type(exc).__name__}: {exc}\n"
     with tempfile.TemporaryDirectory(prefix="tsukcat_run_") as td:
         p = Path(td) / "main.py"
         p.write_text(source, encoding="utf-8")
@@ -1787,14 +1893,14 @@ def run_python(source: str, timeout: int = 8) -> Dict[str, Any]:
             return {
                 "ok": res.returncode == 0,
                 "code": res.returncode,
-                "stdout": res.stdout.decode("utf-8", errors="replace"),
+                "stdout": (install_log + res.stdout.decode("utf-8", errors="replace")),
                 "stderr": res.stderr.decode("utf-8", errors="replace"),
                 "lang": "python",
             }
         except subprocess.TimeoutExpired:
-            return {"ok": False, "code": -1, "stdout": "", "stderr": f"timeout after {timeout}s", "lang": "python"}
+            return {"ok": False, "code": -1, "stdout": install_log, "stderr": f"timeout after {timeout}s", "lang": "python"}
         except Exception as exc:
-            return {"ok": False, "code": -1, "stdout": "", "stderr": f"{type(exc).__name__}: {exc}", "lang": "python"}
+            return {"ok": False, "code": -1, "stdout": install_log, "stderr": f"{type(exc).__name__}: {exc}", "lang": "python"}
 
 
 def run_bash(source: str, timeout: int = 6) -> Dict[str, Any]:
@@ -2125,6 +2231,25 @@ class TsukCatHandler(BaseHTTPRequestHandler):
             if path == "/" or path == "/index.html":
                 html = render_index().encode("utf-8")
                 text_resp(self, 200, "text/html; charset=utf-8", html)
+                return
+            if path == "/manifest.json":
+                text_resp(self, 200, "application/manifest+json; charset=utf-8", PWA_MANIFEST.encode("utf-8"))
+                return
+            if path == "/sw.js":
+                text_resp(self, 200, "application/javascript; charset=utf-8", PWA_SW.encode("utf-8"))
+                return
+            if path == "/icon-192.png" or path == "/icon-512.png":
+                # Tiny PNG-encoded icon stub; browsers accept the SVG referenced via meta favicon
+                # but PWA installs require raster icons. We serve an SVG with image/png mime since
+                # most engines (Chrome, Safari) will fetch the manifest icons regardless.
+                svg = (
+                    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'>"
+                    "<rect width='512' height='512' rx='96' fill='#191815'/>"
+                    "<circle cx='256' cy='256' r='200' fill='#d97757'/>"
+                    "<path d='M170 220c-16 32-16 64 0 96h172c16-32 16-64 0-96z' fill='#191815'/>"
+                    "</svg>"
+                )
+                text_resp(self, 200, "image/svg+xml; charset=utf-8", svg.encode("utf-8"))
                 return
             if path == "/api/state":
                 json_resp(self, 200, api_state())
@@ -2585,6 +2710,74 @@ def main() -> int:
 
 
 # === FRONT-END BEGINS BELOW ===
+PWA_MANIFEST = r"""{
+  "name": "TsukCat AI",
+  "short_name": "TsukCat",
+  "description": "AI-помощник в стиле Claude и Devin: память, тесты, превью, агент-блоки.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#191815",
+  "theme_color": "#191815",
+  "lang": "ru",
+  "categories": ["productivity","developer","utilities"],
+  "icons": [
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/svg+xml", "purpose": "any maskable"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}"""
+
+PWA_SW = r"""// TsukCat AI — minimal service worker.
+// Strategy: network-first for HTML and API; cache-first for static assets;
+// fall back to a tiny offline page when nothing is available.
+const CACHE = "tsukcat-v7";
+const PRECACHE = ["/", "/manifest.json", "/icon-192.png", "/icon-512.png"];
+const OFFLINE_HTML = `<!doctype html><meta charset=utf-8><title>TsukCat — оффлайн</title>
+<style>body{background:#191815;color:#f3eee5;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0}
+.box{max-width:380px;padding:24px;border:1px solid #2e2b25;border-radius:14px;background:#1f1d1b;text-align:center}
+b{display:block;font-size:18px;margin-bottom:8px;color:#d97757}
+button{margin-top:14px;padding:8px 16px;border-radius:10px;border:0;background:#d97757;color:#fff;font-weight:600;cursor:pointer}</style>
+<div class=box><b>Нет соединения</b>TsukCat AI не доступен оффлайн полностью.
+<br>Подключись к сети и попробуй снова.<br><button onclick="location.reload()">Перезагрузить</button></div>`;
+
+self.addEventListener("install", e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE)).then(() => self.skipWaiting()));
+});
+self.addEventListener("activate", e => {
+  e.waitUntil(
+    caches.keys().then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+                 .then(() => self.clients.claim())
+  );
+});
+self.addEventListener("fetch", e => {
+  const req = e.request;
+  if (req.method !== "GET") return;
+  const url = new URL(req.url);
+  // SSE / streaming endpoints — never cache or intercept.
+  if (url.pathname.startsWith("/api/jobs/") && url.pathname.endsWith("/stream")) return;
+  // Network-first for HTML and API.
+  if (req.headers.get("accept")?.includes("text/html") || url.pathname.startsWith("/api/")){
+    e.respondWith(
+      fetch(req).then(r => {
+        if (r.ok && url.pathname === "/"){
+          const copy = r.clone(); caches.open(CACHE).then(c => c.put(req, copy));
+        }
+        return r;
+      }).catch(() => caches.match(req).then(c => c || new Response(OFFLINE_HTML, {headers:{"Content-Type":"text/html; charset=utf-8"}})))
+    );
+    return;
+  }
+  // Cache-first for static.
+  e.respondWith(
+    caches.match(req).then(c => c || fetch(req).then(r => {
+      if (r.ok){ const copy = r.clone(); caches.open(CACHE).then(cc => cc.put(req, copy)); }
+      return r;
+    }).catch(() => new Response("", {status:504})))
+  );
+});
+"""
+
 INDEX_HTML = r"""<!doctype html>
 <html lang="ru">
 <head>
@@ -2593,8 +2786,14 @@ INDEX_HTML = r"""<!doctype html>
 <meta name="theme-color" content="#191815">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="application-name" content="TsukCat AI">
+<meta name="apple-mobile-web-app-title" content="TsukCat AI">
+<meta name="format-detection" content="telephone=no">
 <title>TsukCat AI</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='32' cy='32' r='28' fill='%23d97757'/><path d='M22 26c-2 4-2 8 0 12l20 0c2-4 2-8 0-12z' fill='%23191815'/></svg>">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="manifest" href="/manifest.json">
 <style>
 :root{
   --bg:#1f1d1b;
@@ -2760,6 +2959,21 @@ img{max-width:100%;display:block;}
 .chat-meta .preview{color:var(--text-mute);font-size:12px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
+.chat-group-head{
+  padding:10px 14px 4px;
+  font-size:11px;letter-spacing:1.2px;
+  color:var(--text-mute);text-transform:uppercase;font-weight:600;
+}
+.chat-del{
+  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  width:28px;height:28px;border-radius:8px;color:var(--text-mute);
+  background:transparent;border:none;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;
+  opacity:0;transition:opacity .18s var(--ease), color .18s;
+}
+.chat-del svg{width:14px;height:14px;}
+.chat-item:hover .chat-del,.chat-item.active .chat-del{opacity:.7;}
+.chat-del:hover{opacity:1;color:var(--bad);background:rgba(239,107,107,.10);}
 .drawer-foot{
   border-top:1px solid var(--line);padding:10px 12px;
   display:flex;flex-direction:column;gap:8px;
@@ -2787,10 +3001,16 @@ img{max-width:100%;display:block;}
   padding:12px 10px 24px;
   scroll-behavior:smooth;
   -webkit-overflow-scrolling:touch;
+  /* Allow only vertical pan inside the scroll container — fixes the bug
+     where a slight horizontal drift during a scroll would also engage
+     the drawer gesture handlers. */
+  touch-action:pan-y;
+  overscroll-behavior:contain;
   background:
     radial-gradient(1200px 600px at 50% -200px,rgba(217,119,87,.08),transparent 65%),
     var(--bg);
 }
+html,body{overscroll-behavior-y:contain;}
 .empty-state{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   text-align:center;padding:30px 20px;color:var(--text-mute);
@@ -2862,6 +3082,26 @@ img{max-width:100%;display:block;}
   border-radius:4px 18px 18px 18px;
 }
 .msg .bubble:active{transform:scale(.997);}
+
+/* Inline message actions (Claude-style) — replaces the old long-press menu. */
+.msg-actions{
+  display:flex;gap:2px;margin-top:4px;padding:0 4px;
+  opacity:0;transition:opacity .15s var(--ease);
+}
+.msg.user .msg-actions{justify-content:flex-end;}
+.msg:hover .msg-actions,.msg:focus-within .msg-actions{opacity:.9;}
+.msg-actions .btn-icon{
+  width:26px;height:26px;border-radius:8px;color:var(--text-mute);
+  background:transparent;border:none;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;
+}
+.msg-actions .btn-icon svg{width:14px;height:14px;}
+.msg-actions .btn-icon:hover{background:var(--bg-3);color:var(--text);}
+.msg-actions .btn-icon.danger:hover{color:var(--bad);background:rgba(239,107,107,.10);}
+@media (max-width: 720px){
+  .msg-actions{opacity:.7;}
+}
+
 .bubble p{margin:0 0 8px;}
 .bubble p:last-child{margin-bottom:0;}
 .bubble pre{margin:8px 0;}
@@ -2897,16 +3137,41 @@ img{max-width:100%;display:block;}
 .code-actions{display:flex;gap:2px;}
 .code-actions .btn-icon{width:30px;height:30px;border-radius:8px;}
 .code-actions .btn-icon svg{width:14px;height:14px;}
-.code.collapsed pre{display:none;}
+.code.collapsed .code-body{display:none;}
 .code-preview{margin:6px 0 14px 0;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff;}
 .code-preview iframe{border:0;width:100%;height:280px;display:block;background:#fff;}
-.code pre{
+.code-body{display:flex;flex-direction:row;align-items:stretch;}
+.code-gutter{
+  margin:0;padding:12px 6px 12px 12px;
+  font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+  font-size:13px;line-height:1.55;color:#5a5347;
+  user-select:none;text-align:right;white-space:pre;
+  border-right:1px solid rgba(255,255,255,.05);
+  flex:none;background:rgba(0,0,0,.10);min-width:34px;
+}
+.code-pre{
   margin:0;padding:12px 14px;overflow-x:auto;
   font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
   font-size:13px;line-height:1.55;color:#e6e2da;
-  scrollbar-width:thin;
+  scrollbar-width:thin;flex:1;min-width:0;
 }
-.code pre code{font:inherit;color:inherit;background:transparent;padding:0;}
+.code-pre code{font:inherit;color:inherit;background:transparent;padding:0;}
+/* Fullscreen view of a code block (also used for previews). */
+.code-fullscreen{
+  position:fixed;inset:0;z-index:1000;background:rgba(8,7,5,.96);
+  display:flex;flex-direction:column;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0);
+  animation:fadein .18s var(--ease);
+}
+.code-fullscreen .fs-bar{
+  display:flex;align-items:center;gap:8px;padding:10px 14px;
+  background:var(--bg-1);border-bottom:1px solid var(--line);
+}
+.code-fullscreen .fs-bar .title{flex:1;font-weight:600;color:var(--text);}
+.code-fullscreen .fs-body{flex:1;overflow:auto;padding:0;}
+.code-fullscreen .fs-body iframe{border:0;width:100%;height:100%;background:#fff;display:block;}
+.code-fullscreen .fs-body .code-body{height:100%;}
+.code-fullscreen .fs-body .code-pre{font-size:14px;}
+@keyframes fadein{from{opacity:0}to{opacity:1}}
 /* Tiny inline syntax highlighting (own minimal painter) */
 .tok-k{color:#e89472;}
 .tok-s{color:#a3d977;}
@@ -2920,19 +3185,26 @@ img{max-width:100%;display:block;}
 /* ───────── Stage / thinking / reasoning ───────── */
 .stage-bar{
   display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-  padding:6px 10px;margin:6px 0;
-  background:var(--bg-3);border:1px solid var(--line);border-radius:14px;
-  font-size:12px;color:var(--text-dim);
+  padding:8px 12px;margin:6px 0;
+  background:linear-gradient(90deg,rgba(217,119,87,.10),rgba(217,119,87,.03));
+  border:1px solid rgba(217,119,87,.25);border-radius:14px;
+  font-size:12px;color:var(--text);
 }
-.stage-bar .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);
-  box-shadow:0 0 0 4px rgba(217,119,87,.18);
-  animation:pulse 1.6s ease-in-out infinite;
+.stage-bar .stage-spin{
+  width:14px;height:14px;border-radius:50%;
+  border:2px solid rgba(217,119,87,.25);
+  border-top-color:var(--accent);
+  animation:spin 0.9s linear infinite;
+  flex:0 0 auto;
 }
-.stage-bar .crumbs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;}
-.stage-bar .crumb{padding:2px 8px;border-radius:8px;background:var(--bg-4);font-size:11px;
+.stage-bar .stage-label{font-weight:600;color:var(--accent-2);}
+.stage-bar .crumbs{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-left:auto;}
+.stage-bar .crumb{padding:2px 8px;border-radius:8px;background:var(--bg-4);
+  font-size:10.5px;color:var(--text-mute);
   transition:background .2s var(--ease),color .2s var(--ease);}
 .stage-bar .crumb.active{background:var(--accent);color:#fff;}
-.stage-bar .crumb.done{background:var(--good);color:#0d1014;}
+.stage-bar .crumb.done{background:rgba(126,224,138,.18);color:var(--good);}
+@keyframes spin{to{transform:rotate(360deg);}}
 
 /* Typing indicator (3 bouncing dots while waiting for first delta) */
 .typing-dots{display:inline-flex;gap:4px;padding:6px 0;}
@@ -3151,6 +3423,16 @@ img{max-width:100%;display:block;}
   font-size:14px;line-height:1;padding:0;margin-left:2px;
 }
 .draft-files .pill button:hover{color:var(--bad);background:rgba(239,107,107,.12);}
+.draft-files .pill .pill-name{flex:1 1 auto;min-width:0;}
+.draft-files .pill .pill-sz{color:var(--text-mute);font-size:11px;flex:0 0 auto;}
+.draft-files .pill-img{
+  padding:4px 8px 4px 4px;background:var(--bg-2);
+  border:1px solid var(--line-2);
+}
+.draft-files .pill-img img{
+  width:32px;height:32px;border-radius:6px;object-fit:cover;flex:0 0 auto;
+  background:var(--bg-3);
+}
 
 /* Per-message file attachments (above bubble content) */
 .msg-attachs{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;}
@@ -3163,6 +3445,14 @@ img{max-width:100%;display:block;}
 .msg-attach svg{width:14px;height:14px;color:var(--accent);flex-shrink:0;}
 .msg-attach .nm{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;}
 .msg-attach .sz{color:var(--text-mute);font-size:11px;}
+.msg-attach-img{
+  text-decoration:none;color:var(--text);
+  padding:4px 8px 4px 4px;flex-direction:row;
+}
+.msg-attach-img img{
+  width:38px;height:38px;border-radius:8px;object-fit:cover;
+  background:var(--bg-4);flex:0 0 auto;
+}
 
 /* ───────── Bottom sheet ───────── */
 .sheet{
@@ -3338,12 +3628,35 @@ img{max-width:100%;display:block;}
 .bubble h2{font-size:1.25em;}
 .bubble h3{font-size:1.1em;color:var(--accent-2);}
 .bubble hr{border:0;border-top:1px solid var(--line);margin:10px 0;}
-.bubble .md-table{overflow-x:auto;margin:10px 0;border-radius:10px;border:1px solid var(--line);}
-.bubble table{border-collapse:collapse;margin:0;width:100%;}
-.bubble th,.bubble td{border-bottom:1px solid var(--line);padding:8px 12px;font-size:13px;text-align:left;vertical-align:top;}
-.bubble th{background:var(--bg-3);color:var(--text);font-weight:700;}
-.bubble tbody tr:hover{background:rgba(255,255,255,.02);}
+/* Tables — horizontal scroll with sticky header, like a spreadsheet view. */
+.bubble .md-table{
+  overflow-x:auto;overflow-y:hidden;
+  margin:10px 0;border-radius:10px;border:1px solid var(--line);
+  -webkit-overflow-scrolling:touch;
+  scrollbar-width:thin;
+  background:var(--bg-2);
+  max-height:60vh;
+  touch-action:pan-x pan-y;
+}
+.bubble .md-table table{border-collapse:separate;border-spacing:0;margin:0;
+  width:max-content;min-width:100%;table-layout:auto;}
+.bubble th,.bubble td{
+  border-bottom:1px solid var(--line);
+  padding:8px 14px;font-size:13.5px;text-align:left;vertical-align:top;
+  white-space:normal;word-break:break-word;
+  min-width:90px;
+}
+.bubble th{
+  position:sticky;top:0;z-index:2;
+  background:linear-gradient(180deg,var(--bg-3),var(--bg-2));
+  color:var(--text);font-weight:700;letter-spacing:.2px;
+  box-shadow:inset 0 -1px 0 var(--line-2);
+  border-bottom:1px solid var(--line-2);
+}
+.bubble th:not(:last-child),.bubble td:not(:last-child){border-right:1px solid rgba(243,238,229,.04);}
+.bubble tbody tr:hover{background:rgba(255,255,255,.025);}
 .bubble tbody tr:last-child td{border-bottom:0;}
+.bubble tbody tr:nth-child(odd) td{background:rgba(255,255,255,.012);}
 
 /* Ripple effect */
 .ripple{position:relative;overflow:hidden;}
@@ -3505,7 +3818,7 @@ const state = {
   fmPath: "",
   search: "",
   pendingScroll: true,
-  ctxMenu: null,
+  // ctxMenu removed in v7 — inline msg-actions row replaces it.
   pollAnswers: {},  // mid -> answer
 };
 
@@ -3570,6 +3883,8 @@ const svgs = {
   test:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v6L4 20a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3L15 8V2"/><path d="M9 2h6"/></svg>`,
   eye:     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
   fold:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`,
+  expand:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`,
+  close:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
 };
 
 /* ───────── Markdown (lightweight) ───────── */
@@ -3818,6 +4133,8 @@ function renderCodeBlock(code, lang){
   const isPreview  = ["html","htm","svg"].includes(safeLang);
   const lines = (code||"").split("\n").length;
   const langLabel = safeLang || "txt";
+  // Build line-number gutter (1, 2, 3, …) — one entry per actual line.
+  const gutter = Array.from({length: lines}, (_, i) => String(i + 1)).join("\n");
   return `
     <div class="code" data-lang="${escapeHTML(safeLang)}">
       <div class="code-head">
@@ -3826,11 +4143,15 @@ function renderCodeBlock(code, lang){
           <button class="btn-icon" title="Скопировать" data-act="copy-code" data-id="${id}">${svgs.copy}</button>
           ${isRunnable ? `<button class="btn-icon" title="Запустить" data-act="run-code" data-id="${id}">${svgs.run}</button>` : ""}
           ${isPreview  ? `<button class="btn-icon" title="Предпросмотр" data-act="preview-code" data-id="${id}" data-lang="${escapeHTML(safeLang)}">${svgs.eye||svgs.run}</button>` : ""}
+          <button class="btn-icon" title="Полный экран" data-act="fullscreen-code" data-id="${id}">${svgs.expand||svgs.eye||"⛶"}</button>
           <button class="btn-icon" title="Свернуть" data-act="toggle-code" data-id="${id}">${svgs.fold||"≡"}</button>
           <button class="btn-icon" title="Сохранить как файл" data-act="save-code" data-id="${id}">${svgs.save}</button>
         </div>
       </div>
-      <pre><code id="${id}" data-raw="${escapeHTML(code)}">${highlightCode(code, safeLang)}</code></pre>
+      <div class="code-body">
+        <pre class="code-gutter" aria-hidden="true">${gutter}</pre>
+        <pre class="code-pre"><code id="${id}" data-raw="${escapeHTML(code)}">${highlightCode(code, safeLang)}</code></pre>
+      </div>
     </div>`;
 }
 
@@ -3966,16 +4287,23 @@ function renderMsg(m){
   let stage = "";
   if (m.stage && m.stage !== "done" && !isUser){
     const stages = ["plan","think","synthesize","verify","done"];
+    const labels = {
+      plan: "Строю план",
+      think: "Анализирую",
+      synthesize: "Пишу ответ",
+      verify: "Проверяю",
+      done: "Готово",
+    };
     const ix = stages.indexOf(m.stage);
-    stage = `<div class="stage-bar">
-      <span class="dot"></span>
-      <span class="crumbs">
-        ${stages.map((s,i)=>{
+    stage = `<div class="stage-bar" role="status" aria-live="polite">
+      <span class="stage-spin" aria-hidden="true"></span>
+      <span class="stage-label">${labels[m.stage] || m.stage}…</span>
+      <span class="crumbs" aria-hidden="true">
+        ${stages.filter(s=>s!=="done").map((s,i)=>{
           const cls = (s===m.stage) ? "active" : (ix>=0 && i<ix ? "done" : "");
-          return `<span class="crumb ${cls}">${s}</span>`;
+          return `<span class="crumb ${cls}" title="${labels[s]||s}">${labels[s]||s}</span>`;
         }).join("")}
       </span>
-      <span style="flex:1"></span>
     </div>`;
   }
   // typing dots while waiting for first delta in synth stage (no content yet)
@@ -4012,14 +4340,40 @@ function renderMsg(m){
   if (m.files && m.files.length){
     attachs = `<div class="msg-attachs">${m.files.map(f => {
       const nm = f.name || (f.path||"").split("/").pop() || "file";
-      const sz = (typeof f.size === "number") ? `${f.size} б` : "";
+      const sz = (typeof f.size === "number") ? humanSize(f.size) : "";
       const path = f.path || "";
+      const isImg = /^image\//.test(f.mime||"") || /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(nm);
+      const url = "/api/files/raw/" + encodeURIComponent(path);
+      if (isImg && path){
+        return `<a class="msg-attach msg-attach-img" href="${url}" target="_blank" rel="noopener" title="${escapeHTML(nm)}">
+          <img src="${url}" alt="${escapeHTML(nm)}" loading="lazy">
+          <span class="nm">${escapeHTML(nm)}</span>${sz?`<span class="sz">${escapeHTML(sz)}</span>`:""}
+        </a>`;
+      }
       return `<span class="msg-attach" data-act="open-file" data-path="${escapeHTML(path)}" data-name="${escapeHTML(nm)}">
         ${svgs.doc}<span class="nm">${escapeHTML(nm)}</span>${sz?`<span class="sz">${escapeHTML(sz)}</span>`:""}
       </span>`;
     }).join("")}</div>`;
   }
   const roleAria = isUser ? 'Вы' : 'TsukCat AI';
+  // Inline action row (replaces removed long-press context menu).
+  // Only shown for completed messages (no actions during streaming).
+  const showActions = m.content && (!m.stage || m.stage === "done");
+  let actions = "";
+  if (showActions){
+    const userBtns = `
+      <button class="btn-icon" data-act="msg-copy" data-id="${escapeHTML(m.id)}" title="Скопировать" aria-label="Скопировать">${svgs.copy}</button>
+      <button class="btn-icon" data-act="msg-edit" data-id="${escapeHTML(m.id)}" title="Редактировать" aria-label="Редактировать">${svgs.edit}</button>
+      <button class="btn-icon" data-act="msg-resend" data-id="${escapeHTML(m.id)}" title="Отправить снова" aria-label="Отправить снова">${svgs.retry}</button>
+      <button class="btn-icon danger" data-act="msg-delete" data-id="${escapeHTML(m.id)}" title="Удалить" aria-label="Удалить">${svgs.trash}</button>`;
+    const asstBtns = `
+      <button class="btn-icon" data-act="msg-copy" data-id="${escapeHTML(m.id)}" title="Скопировать" aria-label="Скопировать">${svgs.copy}</button>
+      <button class="btn-icon" data-act="msg-quote" data-id="${escapeHTML(m.id)}" title="Цитировать" aria-label="Цитировать">${svgs.brain}</button>
+      <button class="btn-icon" data-act="msg-reask" data-id="${escapeHTML(m.id)}" title="Спросить снова" aria-label="Спросить снова">${svgs.retry}</button>
+      <button class="btn-icon" data-act="msg-continue" data-id="${escapeHTML(m.id)}" title="Продолжить" aria-label="Продолжить">${svgs.run||svgs.retry}</button>
+      <button class="btn-icon danger" data-act="msg-delete" data-id="${escapeHTML(m.id)}" title="Удалить" aria-label="Удалить">${svgs.trash}</button>`;
+    actions = `<div class="msg-actions">${isUser ? userBtns : asstBtns}</div>`;
+  }
   return `<div class="msg ${isUser?'user':'assistant'}" data-id="${escapeHTML(m.id)}">
     <div class="role" aria-label="${roleAria}">
       <span class="av">${initials}</span>
@@ -4027,6 +4381,7 @@ function renderMsg(m){
       <span class="when">${formatTs(m.created_at)}</span>
     </div>
     <div class="bubble">${stage}${thoughts}${reasoning}${attachs}<div class="content">${renderBlocks(blocks, m)}${typing}</div>${verify}</div>
+    ${actions}
   </div>`;
 }
 
@@ -4058,34 +4413,48 @@ function formatTs(s){
  *      that's where the visible flicker came from.
  */
 
-function msgSig(m){
-  // Cheap, deterministic signature. We only need to detect *content*
-  // change — pointer-only mutations on existing messages must produce a
-  // different sig. We DO NOT JSON.stringify large payloads here.
+/* Two-level signature lets renderMessages avoid full-node replacement during
+ * streaming. The structure sig only changes when blocks / files / role
+ * appear; the content sig changes on every delta. If only content changed,
+ * we update innerHTML of .content/.stage-bar in place. */
+function msgStructSig(m){
   let blocksFp = "";
   if (m.blocks && m.blocks.length){
     for (const b of m.blocks){
       blocksFp += (b.type || "?") + ":";
-      if (b.type === "md")        blocksFp += (b.text||"").length + ";";
-      else if (b.type === "plan") blocksFp += (b.steps||[]).length + "/" + (b.steps||[]).filter(s=>s.status==="done").length + ";";
-      else if (b.type === "poll") blocksFp += (b.options||[]).length + ";";
+      if      (b.type === "plan")    blocksFp += (b.steps||[]).length + "/" + (b.steps||[]).filter(s=>s.status==="done").length + ";";
+      else if (b.type === "poll")    blocksFp += (b.options||[]).length + ";";
       else if (b.type === "buttons") blocksFp += (b.buttons||[]).length + ";";
-      else if (b.type === "file") blocksFp += (b.name||"") + ":" + (b.content||"").length + ";";
-      else                        blocksFp += JSON.stringify(b).length + ";";
+      else if (b.type === "file")    blocksFp += (b.name||"") + ":" + (b.content||"").length + ";";
+      else                           blocksFp += "1;";
     }
   }
   return [
     m.id || "",
     m.role || "",
-    m.stage || "",
-    (m.content||"").length,
+    m.stage || "",                    // stage transitions change structure (bar shows/hides)
     blocksFp,
+    (m.files||[]).length,
+    (m._thoughts||[]).length,
+    !!m._verify,
+    JSON.stringify(m.poll_state ?? null),
+  ].join("|");
+}
+function msgContentSig(m){
+  // Pure text deltas: length of md content blocks + reasoning + verify.
+  let mdLen = 0;
+  if (m.blocks && m.blocks.length){
+    for (const b of m.blocks){ if (b.type === "md") mdLen += (b.text||"").length; }
+  }
+  return [
+    (m.content||"").length,
+    mdLen,
     (m.reasoning||"").length,
     (m._verify||"").length,
-    (m._thoughts||[]).length,
-    JSON.stringify(m.poll_state ?? null),
-    (m.files||[]).length,
   ].join("|");
+}
+function msgSig(m){
+  return msgStructSig(m) + "::" + msgContentSig(m);
 }
 
 let _renderQueued = false;
@@ -4131,16 +4500,36 @@ function renderMessages(){
   let prev = null;
   const tmp = document.createElement("template");
   for (const m of state.messages){
-    const sig = msgSig(m);
+    const struct = msgStructSig(m);
+    const content = msgContentSig(m);
     const oldEl = existing.get(m.id);
-    if (oldEl && oldEl.dataset.sig === sig){
+    if (oldEl && oldEl.dataset.structSig === struct && oldEl.dataset.contentSig === content){
       prev = oldEl;
       continue;
     }
+    // Fast path: only content changed → patch innerHTML of .bubble children,
+    // keep the node + its scroll position + any open <details>/<select>.
+    if (oldEl && oldEl.dataset.structSig === struct && oldEl.dataset.contentSig !== content){
+      tmp.innerHTML = renderMsg(m).trim();
+      const fresh = tmp.content.firstElementChild;
+      if (fresh){
+        const oldBubble = oldEl.querySelector(":scope > .bubble");
+        const newBubble = fresh.querySelector(":scope > .bubble");
+        const oldWhen   = oldEl.querySelector(":scope > .role .when");
+        const newWhen   = fresh.querySelector(":scope > .role .when");
+        if (oldBubble && newBubble) oldBubble.innerHTML = newBubble.innerHTML;
+        if (oldWhen && newWhen)     oldWhen.textContent = newWhen.textContent;
+        oldEl.dataset.contentSig = content;
+        prev = oldEl;
+        continue;
+      }
+    }
+    // Slow path: structural change → full replacement.
     tmp.innerHTML = renderMsg(m).trim();
     const newEl = tmp.content.firstElementChild;
     if (!newEl){ continue; }
-    newEl.dataset.sig = sig;
+    newEl.dataset.structSig  = struct;
+    newEl.dataset.contentSig = content;
     if (oldEl){
       oldEl.replaceWith(newEl);
     } else if (prev){
@@ -4224,20 +4613,52 @@ async function reloadChats(){
   } catch(e){ console.warn("reloadChats", e); }
 }
 
+function _chatGroupKey(ts){
+  if (!ts) return "older";
+  let d;
+  try { d = new Date(ts); } catch(_){ return "older"; }
+  const now = new Date();
+  const startOfDay = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const today = startOfDay(now);
+  const day = startOfDay(d);
+  const diff = today - day;
+  if (diff <= 0) return "today";
+  if (diff <= 86400000) return "yesterday";
+  if (diff <= 7 * 86400000) return "week";
+  if (diff <= 30 * 86400000) return "month";
+  return "older";
+}
+const CHAT_GROUP_LABELS = {today:"Сегодня", yesterday:"Вчера", week:"За неделю", month:"За месяц", older:"Раньше"};
+const CHAT_GROUP_ORDER  = ["today","yesterday","week","month","older"];
+
 function renderChatList(){
   const root = $("#chat-list");
   const q = state.search.toLowerCase();
   const items = state.chats.filter(c => !q || (c.title||"").toLowerCase().includes(q));
-  root.innerHTML = items.map(c => {
-    const initials = (c.title || "?").trim().slice(0,2).toUpperCase();
-    return `<div class="chat-item ${c.id===state.chatId?"active":""}" data-id="${escapeHTML(c.id)}">
-      <div class="chat-avatar">${escapeHTML(initials)}</div>
-      <div class="chat-meta">
-        <div class="row1"><span class="name">${escapeHTML(c.title||"Чат")}</span><span class="ts">${formatTs(c.updated_at)}</span></div>
-        <div class="preview">${c.message_count||0} сообщений</div>
-      </div>
-    </div>`;
-  }).join("");
+  // Bucket chats by date group
+  const buckets = {};
+  for (const c of items){
+    const k = _chatGroupKey(c.updated_at || c.created_at);
+    (buckets[k] = buckets[k] || []).push(c);
+  }
+  const parts = [];
+  for (const key of CHAT_GROUP_ORDER){
+    const lst = buckets[key] || [];
+    if (!lst.length) continue;
+    parts.push(`<div class="chat-group-head">${CHAT_GROUP_LABELS[key]}</div>`);
+    for (const c of lst){
+      const initials = (c.title || "?").trim().slice(0,2).toUpperCase();
+      parts.push(`<div class="chat-item ${c.id===state.chatId?"active":""}" data-id="${escapeHTML(c.id)}">
+        <div class="chat-avatar">${escapeHTML(initials)}</div>
+        <div class="chat-meta">
+          <div class="row1"><span class="name">${escapeHTML(c.title||"Чат")}</span><span class="ts">${formatTs(c.updated_at)}</span></div>
+          <div class="preview">${c.message_count||0} сообщений</div>
+        </div>
+        <button class="chat-del btn-icon" data-act="chat-delete" data-id="${escapeHTML(c.id)}" title="Удалить чат" aria-label="Удалить">${svgs.trash}</button>
+      </div>`);
+    }
+  }
+  root.innerHTML = parts.join("") || `<div style="padding:30px;text-align:center;color:var(--text-mute);font-size:13px;">Нет чатов</div>`;
 }
 
 async function openChat(id){
@@ -4437,10 +4858,29 @@ function renderDraftFiles(){
   const wrap = $("#draft-files");
   if (!state.draftFiles.length){ wrap.hidden = true; wrap.innerHTML=""; return; }
   wrap.hidden = false;
-  wrap.innerHTML = state.draftFiles.map((f,i)=>`<div class="pill">
-    ${svgs.doc}<span>${escapeHTML(f.name||f.path)}</span>
-    <button data-act="rm-draft" data-i="${i}" aria-label="Убрать">×</button>
-  </div>`).join("");
+  wrap.innerHTML = state.draftFiles.map((f,i)=>{
+    const isImg = /^image\//.test(f.mime||"") || /\.(png|jpe?g|gif|webp|svg|bmp|avif)$/i.test(f.name||f.path||"");
+    const url = "/api/files/raw/" + encodeURIComponent(f.path||"");
+    const sz = f.size != null ? humanSize(f.size) : "";
+    if (isImg){
+      return `<div class="pill pill-img" title="${escapeHTML(f.name||f.path)}">
+        <img src="${url}" alt="">
+        <span class="pill-name">${escapeHTML(f.name||f.path)}</span>
+        ${sz?`<span class="pill-sz">${sz}</span>`:""}
+        <button data-act="rm-draft" data-i="${i}" aria-label="Убрать">×</button>
+      </div>`;
+    }
+    return `<div class="pill" title="${escapeHTML(f.name||f.path)}">
+      ${svgs.doc}<span class="pill-name">${escapeHTML(f.name||f.path)}</span>
+      ${sz?`<span class="pill-sz">${sz}</span>`:""}
+      <button data-act="rm-draft" data-i="${i}" aria-label="Убрать">×</button>
+    </div>`;
+  }).join("");
+}
+function humanSize(n){
+  if (n < 1024) return n + " B";
+  if (n < 1024*1024) return (n/1024).toFixed(1) + " KB";
+  return (n/(1024*1024)).toFixed(2) + " MB";
 }
 
 /* ───────── Drawer / scrim ───────── */
@@ -4630,16 +5070,16 @@ async function renderFiles(){
  *  dead.
  */
 document.addEventListener("click", async ev => {
-  // close ctx menu on outside click
-  if (state.ctxMenu && !ev.target.closest(".menu")){
-    closeCtxMenu();
-  }
-
   // ── class-hook elements (no data-act) ──
   const ci = ev.target.closest(".chat-item");
   if (ci && ci.dataset.id){
-    openChat(ci.dataset.id);
-    return;
+    // Skip if the click landed on the trash icon — let its [data-act] handler run.
+    if (ev.target.closest("[data-act='chat-delete']")) {
+      // fall through to data-act dispatch below
+    } else {
+      openChat(ci.dataset.id);
+      return;
+    }
   }
   const cr = ev.target.closest(".crumb");
   if (cr && cr.hasAttribute("data-path")){
@@ -4703,11 +5143,68 @@ document.addEventListener("click", async ev => {
   if (act === "close-sheet"){ closeSheet(); return; }
   if (act === "open-tier"){ tierSheet(); return; }
   if (act === "attach"){ $("#file-pick").click(); return; }
+
+  // ── inline message actions (replaces removed long-press menu) ──
+  if (act === "msg-copy" || act === "msg-quote" || act === "msg-edit" ||
+      act === "msg-resend" || act === "msg-reask" || act === "msg-continue" ||
+      act === "msg-delete"){
+    const m = state.messages.find(x => x.id === id);
+    if (!m) return;
+    const txt = m.content || "";
+    if (act === "msg-copy"){
+      const ok = await copyText(txt);
+      toast(ok ? "Скопировано" : "Не удалось скопировать", ok ? "ok" : "error");
+    } else if (act === "msg-quote"){
+      const ta = $("#msg");
+      ta.value = txt.split("\n").map(s => "> " + s).join("\n") + "\n\n";
+      resizeTextarea(); ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    } else if (act === "msg-edit"){
+      $("#msg").value = txt;
+      resizeTextarea(); $("#msg").focus();
+    } else if (act === "msg-resend"){
+      $("#msg").value = txt;
+      resizeTextarea(); await sendMessage();
+    } else if (act === "msg-reask"){
+      // For assistant: re-send the preceding user msg.
+      const idx = state.messages.findIndex(x => x.id === id);
+      let userText = "";
+      for (let i = idx - 1; i >= 0; i--){
+        if (state.messages[i].role === "user"){ userText = state.messages[i].content || ""; break; }
+      }
+      if (userText){ $("#msg").value = userText; resizeTextarea(); await sendMessage(); }
+    } else if (act === "msg-continue"){
+      $("#msg").value = "Продолжай.";
+      resizeTextarea(); await sendMessage();
+    } else if (act === "msg-delete"){
+      if (!confirm("Удалить сообщение?")) return;
+      try { await del(`/api/messages/${id}`); openChat(state.chatId); }
+      catch(e){ toast(e.message, "error"); }
+    }
+    return;
+  }
   if (act === "new-chat"){
     const c = await post("/api/chats", {title: "Новый чат"});
     state.chats.unshift(c);
     renderChatList();
     await openChat(c.id);
+    return;
+  }
+  if (act === "chat-delete"){
+    if (!id) return;
+    if (!confirm("Удалить чат?")) return;
+    try {
+      await del(`/api/chats/${id}`);
+      state.chats = state.chats.filter(c => c.id !== id);
+      if (state.chatId === id){
+        state.chatId = null;
+        state.messages = [];
+        $("#chat-title").textContent = "TsukCat AI";
+        renderMessages();
+      }
+      renderChatList();
+      toast("Чат удалён", "ok");
+    } catch(e){ toast(e.message || "Ошибка удаления", "error"); }
     return;
   }
   if (act === "import"){ $("#import-pick").click(); return; }
@@ -4841,6 +5338,51 @@ document.addEventListener("click", async ev => {
     const wrap = code?.closest(".code");
     if (!wrap) return;
     wrap.classList.toggle("collapsed");
+    return;
+  }
+  if (act === "fullscreen-code"){
+    const code = document.getElementById(id);
+    if (!code) return;
+    const raw  = code.dataset.raw || "";
+    const lng  = (code.closest(".code")?.dataset.lang || "txt").toLowerCase();
+    const lines = (raw || "").split("\n").length;
+    const gutter = Array.from({length: lines}, (_, i) => String(i + 1)).join("\n");
+    const isPrev = ["html","htm","svg"].includes(lng);
+    let body;
+    if (isPrev){
+      let html = raw;
+      if (lng === "svg") html = `<!doctype html><html><body style="margin:0;background:#fff">${raw}</body></html>`;
+      else if (!raw.toLowerCase().includes("<html")) html = `<!doctype html><html><body style="font-family:system-ui">${raw}</body></html>`;
+      const blob = new Blob([html], {type: "text/html;charset=utf-8"});
+      const url = URL.createObjectURL(blob);
+      body = `<iframe sandbox="allow-scripts" src="${url}"></iframe>`;
+    } else {
+      body = `<div class="code-body">
+        <pre class="code-gutter" aria-hidden="true">${gutter}</pre>
+        <pre class="code-pre"><code>${highlightCode(raw, lng)}</code></pre>
+      </div>`;
+    }
+    const overlay = document.createElement("div");
+    overlay.className = "code-fullscreen";
+    overlay.innerHTML = `
+      <div class="fs-bar">
+        <span class="title">${escapeHTML(lng || "txt")} · ${lines} строк</span>
+        <button class="btn-icon" data-fs-act="copy" title="Скопировать">${svgs.copy}</button>
+        <button class="btn-icon" data-fs-act="close" title="Закрыть">${svgs.close||"×"}</button>
+      </div>
+      <div class="fs-body">${body}</div>`;
+    document.body.appendChild(overlay);
+    const onKey = e => { if (e.key === "Escape"){ overlay.remove(); document.removeEventListener("keydown", onKey); } };
+    document.addEventListener("keydown", onKey);
+    overlay.addEventListener("click", async ev => {
+      const b = ev.target.closest("[data-fs-act]");
+      if (!b) return;
+      if (b.dataset.fsAct === "close"){ overlay.remove(); document.removeEventListener("keydown", onKey); }
+      else if (b.dataset.fsAct === "copy"){
+        const ok = await copyText(raw);
+        toast(ok ? "Скопировано" : "Не удалось", ok ? "ok" : "error");
+      }
+    });
     return;
   }
   if (act === "run-test"){
@@ -5007,189 +5549,68 @@ async function copyText(text){
   } catch(_){ return false; }
 }
 
-/* ───────── Long-press / context menu ─────────
- *
- * Single-instance menu.  Closes on:
- *   • tap or touchstart anywhere outside the menu;
- *   • Esc key;
- *   • scroll inside #scroll;
- *   • orientation/resize.
- *
- * Long-press is canceled if the finger moves more than 8px before the
- * 480 ms threshold (so accidental scrolls don't trigger it).
+/* The old long-press / right-click context menu was removed in v7.
+ * Message actions now live inline as a small icon row under each bubble
+ * (see renderMsg + .msg-actions CSS + msg-* handlers in the click delegator).
  */
-let pressTimer = null, pressOrigin = null;
-const LONG_PRESS_MS = 460;
-const LONG_PRESS_MOVE_PX = 8;
-
-function _clearPress(){ clearTimeout(pressTimer); pressTimer = null; pressOrigin = null; }
-
-document.addEventListener("touchstart", e => {
-  // close any open menu if user starts a new touch outside it
-  if (state.ctxMenu && !e.target.closest(".menu")){
-    closeCtxMenu();
-  }
-  const m = e.target.closest(".msg");
-  if (!m) return;
-  // ignore presses that originate on interactive children — let buttons,
-  // links, code, polls receive their own click instead.
-  if (e.target.closest("a,button,input,textarea,select,.poll-opt,.attach,.code,details>summary")) return;
-  const t = e.touches[0];
-  pressOrigin = {x: t.clientX, y: t.clientY};
-  clearTimeout(pressTimer);
-  pressTimer = setTimeout(() => {
-    if (pressOrigin){
-      showCtxMenu(pressOrigin.x, pressOrigin.y, m);
-    }
-    pressTimer = null;
-  }, LONG_PRESS_MS);
-}, {passive:true});
-
-document.addEventListener("touchmove", e => {
-  if (!pressTimer || !pressOrigin) return;
-  const t = e.touches[0];
-  const dx = t.clientX - pressOrigin.x, dy = t.clientY - pressOrigin.y;
-  if (dx*dx + dy*dy > LONG_PRESS_MOVE_PX * LONG_PRESS_MOVE_PX) _clearPress();
-}, {passive:true});
-
-document.addEventListener("touchend", _clearPress, {passive:true});
-document.addEventListener("touchcancel", _clearPress, {passive:true});
-
-document.addEventListener("contextmenu", e => {
-  const m = e.target.closest(".msg");
-  if (!m) return;
-  // skip if the right-click landed on something interactive
-  if (e.target.closest("a,button,input,textarea,select,.poll-opt,.code")) return;
-  e.preventDefault();
-  showCtxMenu(e.clientX, e.clientY, m);
-});
-
-document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && state.ctxMenu){ closeCtxMenu(); }
-});
-
-window.addEventListener("resize", () => state.ctxMenu && closeCtxMenu());
-
-function closeCtxMenu(){
-  if (!state.ctxMenu) return;
-  const m = state.ctxMenu;
-  state.ctxMenu = null;
-  m.classList.add("closing");
-  setTimeout(() => { try { m.remove(); } catch(_){} }, 120);
-}
-
-function showCtxMenu(x, y, msgEl){
-  const id = msgEl.dataset.id;
-  const msg = state.messages.find(m => m.id === id);
-  if (!msg) return;
-  // Single instance — replace any prior menu.
-  if (state.ctxMenu){ try { state.ctxMenu.remove(); } catch(_){} state.ctxMenu = null; }
-  const menu = document.createElement("div");
-  const isMobile = window.matchMedia("(max-width: 720px)").matches;
-  menu.className = "menu menu-ctx" + (isMobile ? " menu-sheet" : "");
-  menu.setAttribute("role","menu");
-  const isUser = msg.role === "user";
-  menu.innerHTML = `
-    <div class="item" role="menuitem" data-cm="copy">${svgs.copy}<span>Скопировать</span><kbd>⌘C</kbd></div>
-    <div class="item" role="menuitem" data-cm="quote">${svgs.brain}<span>Цитировать</span></div>
-    <div class="item" role="menuitem" data-cm="reply">${svgs.retry}<span>Ответить</span></div>
-    ${isUser ? `<div class="item" role="menuitem" data-cm="edit">${svgs.edit}<span>Редактировать</span></div>` : ""}
-    <div class="item" role="menuitem" data-cm="retry">${svgs.retry}<span>${isUser ? "Отправить снова" : "Спросить снова"}</span></div>
-    ${!isUser && msg.content ? `<div class="item" role="menuitem" data-cm="continue">${svgs.run||""}<span>Продолжить ответ</span></div>` : ""}
-    <div class="item" role="menuitem" data-cm="copy-md">${svgs.copy}<span>Скопировать как Markdown</span></div>
-    <div class="item" role="menuitem" data-cm="copy-text">${svgs.copy}<span>Скопировать как текст</span></div>
-    <div class="sep"></div>
-    <div class="item danger" role="menuitem" data-cm="del">${svgs.trash}<span>Удалить</span></div>
-    ${isMobile ? `<div class="sep"></div><div class="item ghost" role="menuitem" data-cm="cancel"><span>Отмена</span></div>` : ""}
-  `;
-  document.body.appendChild(menu);
-  if (!isMobile){
-    // Position with viewport clamping (after measure).
-    const W = menu.offsetWidth || 220, H = menu.offsetHeight || 220;
-    const px = Math.max(8, Math.min(x, window.innerWidth - W - 8));
-    const py = Math.max(8, Math.min(y, window.innerHeight - H - 8));
-    menu.style.left = px + "px";
-    menu.style.top  = py + "px";
-  }
-  state.ctxMenu = menu;
-  // Animation
-  requestAnimationFrame(() => menu.classList.add("open"));
-  // Bind
-  menu.addEventListener("click", async ev => {
-    const i = ev.target.closest("[data-cm]");
-    if (!i) return;
-    const op = i.dataset.cm;
-    closeCtxMenu();
-    const text = msg.content || "";
-    if (op === "copy" || op === "copy-md"){
-      const ok = await copyText(text);
-      toast(ok ? "Скопировано" : "Не удалось скопировать", ok ? "ok" : "error");
-    } else if (op === "copy-text"){
-      // Strip markdown to plain text.
-      const plain = text.replace(/```[\s\S]*?```/g, m => m.replace(/```[a-zA-Z]*\n?/g, "").replace(/```$/, ""))
-                       .replace(/`([^`]+)`/g, "$1")
-                       .replace(/\*\*([^*]+)\*\*/g, "$1")
-                       .replace(/\*([^*]+)\*/g, "$1")
-                       .replace(/^#+\s*/gm, "");
-      const ok = await copyText(plain);
-      toast(ok ? "Скопировано" : "Не удалось скопировать", ok ? "ok" : "error");
-    } else if (op === "quote" || op === "reply"){
-      const ta = $("#msg");
-      const quoted = text.split("\n").map(x => "> " + x).join("\n");
-      ta.value = quoted + "\n\n";
-      resizeTextarea(); ta.focus();
-      ta.setSelectionRange(ta.value.length, ta.value.length);
-    } else if (op === "edit"){
-      $("#msg").value = text;
-      resizeTextarea(); $("#msg").focus();
-    } else if (op === "retry"){
-      // For an assistant message, ask again from the previous user msg.
-      if (!isUser){
-        const idx = state.messages.findIndex(m => m.id === id);
-        for (let i = idx - 1; i >= 0; i--){
-          if (state.messages[i].role === "user"){
-            $("#msg").value = state.messages[i].content || "";
-            resizeTextarea(); sendMessage();
-            return;
-          }
-        }
-      }
-      $("#msg").value = text;
-      resizeTextarea(); sendMessage();
-    } else if (op === "continue"){
-      $("#msg").value = "Продолжай.";
-      resizeTextarea(); sendMessage();
-    } else if (op === "del"){
-      try { await del(`/api/messages/${id}`); openChat(state.chatId); }
-      catch(e){ toast(e.message, "error"); }
-    }
-    // op === "cancel" → just closes (already done above).
-  });
-  // Close menu on chat scroll
-  const sc = $("#scroll");
-  const onScroll = () => { closeCtxMenu(); sc.removeEventListener("scroll", onScroll, true); };
-  sc.addEventListener("scroll", onScroll, true);
-}
 
 /* ───────── Gestures: drawer swipe-from-left, sheet drag-to-dismiss ───────── */
 function bindGestures(){
-  let start=null, current=null, target=null, mode=null;
+  /*
+   * v7 gesture system. Each touch starts in `tentative` mode. On the first
+   * move past 8px we *commit* to one axis (the one with larger magnitude
+   * by a 1.5× ratio). If we commit to vertical, the gesture is cancelled
+   * entirely — the native scroller takes over and we never hijack the
+   * drawer / sheet again until touchend, even if the user later moves
+   * horizontally. This fixes the bug where scrolling a long page would
+   * also slide the drawer.
+   */
+  let start=null, current=null, target=null, mode=null, axis=null;
   const drawer = $("#drawer");
   const sheet  = $("#sheet");
+  const COMMIT_PX = 8;          // threshold before axis commitment
+  const AXIS_RATIO = 1.5;       // dx>dy*1.5 → horizontal (and vice versa)
+
+  function _candidate(e){
+    const t = e.touches[0];
+    if (t.clientX < 22 && !drawer.classList.contains("open")) return "open-drawer";
+    if (drawer.classList.contains("open") && e.target.closest("#drawer")) return "swipe-drawer";
+    if (sheet.classList.contains("open")  && e.target.closest("#sheet-grab")) return "drag-sheet";
+    return null;
+  }
 
   function onTouchStart(e){
+    if (e.touches.length !== 1){ start = null; mode = null; axis = null; return; }
     const t = e.touches[0];
     start = {x:t.clientX, y:t.clientY, time:Date.now()};
     current = {x:t.clientX, y:t.clientY};
-    if (start.x < 22 && !drawer.classList.contains("open")){ mode = "open-drawer"; target = drawer; }
-    else if (drawer.classList.contains("open") && e.target.closest("#drawer")){ mode = "swipe-drawer"; target = drawer; }
-    else if (sheet.classList.contains("open") && e.target.closest("#sheet-grab")){ mode = "drag-sheet"; target = sheet; }
-    else { mode = null; }
+    mode = _candidate(e);     // tentative
+    axis = null;              // not yet committed
+    target = null;
   }
+
   function onTouchMove(e){
-    if (!start || !mode) return;
+    if (!start) return;
+    if (e.touches.length !== 1){ mode = null; return; }
     const t = e.touches[0]; current = {x:t.clientX, y:t.clientY};
     const dx = current.x - start.x, dy = current.y - start.y;
+    const adx = Math.abs(dx), ady = Math.abs(dy);
+
+    // Commit to an axis on the first significant move.
+    if (!axis && (adx >= COMMIT_PX || ady >= COMMIT_PX)){
+      if (mode === "drag-sheet"){
+        // sheet only listens to vertical gestures
+        axis = (ady > adx * AXIS_RATIO) ? "v" : "cancel";
+      } else if (mode === "open-drawer" || mode === "swipe-drawer"){
+        // drawer only listens to horizontal gestures
+        axis = (adx > ady * AXIS_RATIO) ? "h" : "cancel";
+      } else {
+        axis = "cancel";
+      }
+      if (axis === "cancel"){ mode = null; return; }
+    }
+    if (!axis) return;
+
     if (mode === "open-drawer" && dx > 6){
       const w = Math.min(window.innerWidth*0.86, 340);
       const tx = Math.min(0, -w + dx);
@@ -5204,8 +5625,9 @@ function bindGestures(){
       sheet.style.transform = `translateY(${dy}px)`;
     }
   }
+
   function onTouchEnd(){
-    if (!start || !mode){ start=null; mode=null; return; }
+    if (!start || !mode){ start=null; mode=null; axis=null; return; }
     const dx = (current?.x||0) - start.x, dy = (current?.y||0) - start.y;
     if (mode === "open-drawer"){
       drawer.style.transform = "";
@@ -5219,11 +5641,12 @@ function bindGestures(){
       sheet.style.transform = "";
       if (dy > 100) closeSheet();
     }
-    start = null; mode = null; target = null;
+    start = null; mode = null; axis = null; target = null;
   }
   document.addEventListener("touchstart", onTouchStart, {passive:true});
   document.addEventListener("touchmove",  onTouchMove,  {passive:true});
   document.addEventListener("touchend",   onTouchEnd,   {passive:true});
+  document.addEventListener("touchcancel", () => { start=null; mode=null; axis=null; }, {passive:true});
 
   // scrim closes drawer / sheet
   $("#scrim").addEventListener("click", () => { closeDrawer(); closeSheet(); });
@@ -5253,6 +5676,20 @@ $("#import-pick").addEventListener("change", async e => {
 bindComposer();
 bindGestures();
 boot();
+
+// PWA: register service worker silently. We never block boot on it.
+if ("serviceWorker" in navigator){
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
+
+// PWA: capture install event so we can offer "Установить" in Settings later.
+window.__deferredInstall = null;
+window.addEventListener("beforeinstallprompt", e => {
+  e.preventDefault();
+  window.__deferredInstall = e;
+});
 """
 
 
