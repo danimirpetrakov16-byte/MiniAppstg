@@ -4816,6 +4816,8 @@ document.addEventListener("click", async ev => {
     if (!wrap) return;
     let frame = wrap.nextElementSibling;
     if (frame && frame.classList && frame.classList.contains("code-preview")){
+      const oldUrl = frame.dataset.blobUrl;
+      if (oldUrl) { try { URL.revokeObjectURL(oldUrl); } catch(_){} }
       frame.remove();
       return;
     }
@@ -4829,6 +4831,7 @@ document.addEventListener("click", async ev => {
     }
     const blob = new Blob([body], {type: "text/html;charset=utf-8"});
     const url = URL.createObjectURL(blob);
+    frame.dataset.blobUrl = url;
     frame.innerHTML = `<iframe sandbox="allow-scripts" src="${url}" loading="lazy"></iframe>`;
     wrap.parentNode.insertBefore(frame, wrap.nextSibling);
     return;
